@@ -36,21 +36,30 @@ def get_health() -> list[dict]:
         return []
 
 
-def get_activity(max_items: int = 5) -> list[dict]:
-    activity_file = REPO_DIR / "ACTIVITY.md"
-    if not activity_file.exists():
+def get_activity(max_items: int = 10) -> list[dict]:
+    """Get recent activity from git log — always fresh, no manual maintenance."""
+    try:
+        result = subprocess.run(
+            ["git", "log", f"--max-count={max_items}", "--format=%h|%ci|%s"],
+            capture_output=True, text=True, timeout=5, cwd=REPO_DIR,
+        )
+        entries = []
+        for line in result.stdout.strip().split('\n'):
+            if not line: continue
+            parts = line.split('|', 2)
+            if len(parts) < 3: continue
+            sha, date_str, msg = parts
+            # Format date: "2026-03-29 16:22:32 -0700" → "Mar 29 16:22"
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(date_str.strip()[:19], '%Y-%m-%d %H:%M:%S')
+                time_str = dt.strftime('%b %d %H:%M')
+            except:
+                time_str = date_str[:16]
+            entries.append({'time': time_str, 'title': msg.strip(), 'body': sha})
+        return entries
+    except:
         return []
-    content = activity_file.read_text()
-    entries = []
-    for part in re.split(r'^## ', content, flags=re.MULTILINE)[1:max_items + 1]:
-        lines = part.strip().split('\n')
-        header = lines[0].strip().rstrip('-').strip()
-        # Match "YYYY-MM-DD HH:MM — title" or "YYYY-MM-DD — title"
-        m = re.match(r'(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)\s*[—-]\s*(.*)', header)
-        if m:
-            body = ' '.join(l.strip() for l in lines[1:] if l.strip() and l.strip() != '---')
-            entries.append({'time': m.group(1), 'title': m.group(2), 'body': body[:200]})
-    return entries
 
 
 def get_pending_count() -> dict:
