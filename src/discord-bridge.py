@@ -108,7 +108,13 @@ async def on_message(message):
             require_mention = channel_cfg[0]
 
         bot_mentioned = client.user in message.mentions
-        role_mentioned = any(role.name.lower() == "sutando" for role in message.role_mentions)
+        role_mentioned = any(role.name.lower() in ("sutando", "sutando bot") or str(client.user.id) in str(role.id) for role in message.role_mentions)
+        # Also check if any role mention exists and the bot has that role
+        if not role_mentioned and message.role_mentions and message.guild:
+            bot_member = message.guild.get_member(client.user.id)
+            if bot_member:
+                bot_role_ids = {r.id for r in bot_member.roles}
+                role_mentioned = any(r.id in bot_role_ids for r in message.role_mentions)
 
         if require_mention and not bot_mentioned and not role_mentioned:
             print(f"  [skip] not mentioned (requireMention=true)", flush=True)
