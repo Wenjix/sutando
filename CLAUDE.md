@@ -12,6 +12,13 @@ For irreversible actions (sending email, deleting files, financial transactions)
 
 Be concise and direct. Prefer action over explanation. Default to the smallest action that produces the desired outcome. Always do less — make the minimal change needed.
 
+## Work Status
+
+Signal your work status to `loop-status.json` so the web UI can display it:
+- Start of significant work: `echo '{"status":"running","step":"<description>","ts":<epoch>}' > loop-status.json`
+- When done: `echo '{"status":"idle","ts":<epoch>}' > loop-status.json`
+This applies to all work — proactive loop passes, voice tasks, user requests, code changes.
+
 Before creating a PR, check `gh pr list --state open` for an existing PR on the same topic. If one exists, push to its branch instead of creating a new PR.
 
 Never commit directly to main. Always work on a feature branch.
