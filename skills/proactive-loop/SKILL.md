@@ -39,6 +39,8 @@ Each pass, in order:
 0. **Signal loop start.** Write `{"status":"running","step":"Starting pass...","ts":DATE_NOW}` to `core-status.json`. Update the `step` field as you progress through each step. Write `{"status":"idle","ts":DATE_NOW}` when the pass ends.
 
 1. **Check for tasks.** Look in `tasks/` for voice tasks. Look at `context-drop.txt` for context drops. Process anything found — execute the task, write results to `results/`.
+   - **Access control:** If the task has `access_tier: other` or `access_tier: team`, delegate to a sandboxed agent: `codex exec --sandbox read-only "Answer this question about Sutando: <task text>"`. Do NOT process non-owner tasks with your full capabilities. Write the sandboxed output to results.
+   - Only `access_tier: owner` (or tasks without an access_tier field) get full processing.
 
 2. **Check pending questions.** Read `pending-questions.md`. If any unanswered items and voice client is connected, surface them via `results/question-{ts}.txt`. Also send a macOS notification.
 

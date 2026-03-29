@@ -176,6 +176,23 @@ async def on_message(message):
 
     print(f"  @{username}: {text}{attachment_note}")
 
+    # Determine access tier
+    access_tier = "other"
+    if sender_id in allowed:
+        access_tier = "owner"
+    else:
+        # Check if team member (from channel allowlists)
+        try:
+            data = json.loads(ACCESS_FILE.read_text())
+            team_ids = set()
+            for ch_cfg in data.get("groups", {}).values():
+                if isinstance(ch_cfg, dict):
+                    team_ids.update(ch_cfg.get("allowFrom", []))
+            if sender_id in team_ids:
+                access_tier = "team"
+        except:
+            pass
+
     # Write as task
     ts = int(time.time() * 1000)
     task_id = f"task-{ts}"
@@ -187,6 +204,7 @@ async def on_message(message):
         f"source: discord\n"
         f"channel_id: {message.channel.id}\n"
         f"user_id: {message.author.id}\n"
+        f"access_tier: {access_tier}\n"
     )
     pending_replies[task_id] = message.channel
 
