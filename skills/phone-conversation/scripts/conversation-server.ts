@@ -69,15 +69,6 @@ const TASK_POLL_INTERVAL_MS = 500;
 const TASK_TIMEOUT_MS = 120_000;
 const OWNER_NAME = process.env.owner ?? '';
 
-/** Get recent conversation context from the voice agent log */
-function getRecentContext(lines = 5): string {
-	try {
-		const logPath = join(WORKSPACE_DIR, 'conversation.log');
-		if (!existsSync(logPath)) return '';
-		const content = readFileSync(logPath, 'utf-8').trim().split('\n');
-		return content.slice(-lines).join('\n');
-	} catch { return ''; }
-}
 
 const VERIFIED_CALLERS = new Set(
 	(process.env.VERIFIED_CALLERS ?? '').split(',').map(s => s.trim()).filter(Boolean)
@@ -467,8 +458,8 @@ function buildAgent(callSession: CallSession): MainAgent {
 		greeting: callSession.isMeeting
 			? ''  // No greeting for meetings — listen to IVR first
 			: callSession.purpose === 'inbound'
-			? 'Hello, this is Sutando. How can I help?'
-			: 'Hello, this is Sutando calling.',
+			? 'Hi, this is Sutando. How can I help?'
+			: 'Hi, this is Sutando calling.',
 	};
 }
 
