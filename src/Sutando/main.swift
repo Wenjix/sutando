@@ -23,8 +23,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.title = "S"
-            button.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+            let avatarPath = workspace + "/docs/stand-avatar.png"
+            if let image = NSImage(contentsOfFile: avatarPath) {
+                image.size = NSSize(width: 18, height: 18)
+                image.isTemplate = false
+                button.image = image
+            } else {
+                button.title = "S"
+                button.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+            }
         }
 
         let menu = NSMenu()
@@ -32,6 +39,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Toggle Voice (⌃V)", action: #selector(toggleVoice), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Toggle Mute (⌃M)", action: #selector(toggleMute), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Open Core", action: #selector(openCore), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Open Dashboard", action: #selector(openDashboard), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
@@ -243,6 +252,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         """)
         script?.executeAndReturnError(nil)
         NSSound.beep()
+    }
+
+    @objc func openCore() {
+        // Activate Terminal running Claude Code
+        let script = NSAppleScript(source: """
+        tell application "Terminal"
+            activate
+            -- Find the window running claude
+            repeat with w in windows
+                if name of w contains "claude" or name of w contains "sutando" then
+                    set index of w to 1
+                    exit repeat
+                end if
+            end repeat
+        end tell
+        """)
+        script?.executeAndReturnError(nil)
+    }
+
+    @objc func openDashboard() {
+        NSWorkspace.shared.open(URL(string: "http://localhost:7844")!)
     }
 
     // MARK: - Helpers
