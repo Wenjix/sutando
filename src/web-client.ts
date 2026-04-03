@@ -1149,10 +1149,7 @@ function trySuggestion(el) {
 function showNotesInDR() {
   var DASH = 'http://' + window.location.hostname + ':7844';
   fetch(DASH + '/notes').then(function(r){return r.json()}).then(function(notes) {
-    var html = '<div style="max-height:400px;overflow-y:auto">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
-      '<b style="font-size:14px">Notes</b>' +
-      '<span class="suggestion" onclick="window._drContent=null;window._drLocalContent=false;updateDynamicRegion()" style="font-size:11px;cursor:pointer">Close</span></div>';
+    var html = renderDRTabs() + '<div style="max-height:300px;overflow-y:auto">';
     html += notes.map(function(n){
       return '<div style="padding:6px 0;border-bottom:1px solid #2a2a3e;cursor:pointer" onclick="showNoteInDR(&quot;' + n.slug + '&quot;)">' +
         '<span style="color:#7c83ff">' + n.title + '</span>' +
@@ -1181,7 +1178,7 @@ function showNoteInDR(slug) {
     text = text.replace(/[*][*](.+?)[*][*]/g, '<strong>$1</strong>');
     text = text.replace(/^- (.+)$/gm, '<li>$1</li>');
     text = text.replace(new RegExp('\\n\\n', 'g'), '<br><br>');
-    var html = '<div style="max-height:400px;overflow-y:auto">' +
+    var html = renderDRTabs() + '<div style="max-height:300px;overflow-y:auto">' +
       '<span class="suggestion" onclick="showNotesInDR()" style="font-size:11px;cursor:pointer;margin-bottom:8px;display:inline-block">&larr; Back</span>' +
       '<div style="font-size:13px;line-height:1.5">' + text + '</div></div>';
     window._drContent = {type:'html',content:html};
@@ -1191,20 +1188,14 @@ function showNoteInDR(slug) {
 }
 
 function toggleActivity() {
-  // If already showing activity, close it
-  if (window._drLocalContent && window._drContent && window._drContent._isActivity) {
-    window._drContent = null;
-    window._drLocalContent = false;
-    updateDynamicRegion();
-    return;
-  }
   fetch(API_BASE + '/activity').then(function(r){return r.json()}).then(function(data) {
     var items = data.activity || [];
-    if (items.length === 0) { return; }
-    var html = '<div style="max-height:300px;overflow-y:auto">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-      '<b style="font-size:14px">Recent Activity</b>' +
-      '<span class="suggestion" onclick="window._drContent=null;window._drLocalContent=false;updateDynamicRegion()" style="font-size:11px;cursor:pointer">Close</span></div>';
+    var dr = document.getElementById('dynamic-region');
+    if (!dr) return;
+    var html = renderDRTabs() + '<div style="max-height:300px;overflow-y:auto">';
+    if (items.length === 0) {
+      html += '<div style="color:#666;font-size:12px;text-align:center;padding:12px">No recent activity</div>';
+    } else {
     items.forEach(function(item) {
       if (item.type === 'commit') {
         html += '<div style="padding:3px 0;font-size:12px"><span style="color:#555;font-family:monospace">' + item.hash + '</span> <span style="color:#7c83ff">' + esc(item.message) + '</span></div>';
@@ -1212,10 +1203,9 @@ function toggleActivity() {
         html += '<div style="padding:3px 0;font-size:12px;color:#4ecca3">' + esc(item.preview) + '</div>';
       }
     });
+    }
     html += '</div>';
-    window._drContent = {type:'html', content:html, _isActivity:true};
-    window._drLocalContent = true;
-    updateDynamicRegion();
+    dr.innerHTML = html;
   });
 }
 window.toggleActivity = toggleActivity;
@@ -1332,41 +1322,110 @@ function renderDynamicContent(c) {
   }
 }
 
-function updateDynamicRegion() {
-  const dr = document.getElementById('dynamic-region');
-  if (!dr) return;
-  // Skip re-render if user is typing in a question input
-  var activeInput = document.activeElement;
-  if (activeInput && activeInput.classList && activeInput.classList.contains('q-input')) return;
-  const content = window._drContent;
-  const questions = window._drQuestions || [];
-  const proactive = window._drProactive;
+window._drActiveTab = window._drActiveTab || 'starter';
+window._drTaskCount = 0;
 
-  if (content && content.type) {
-    dr.innerHTML = renderDynamicContent(content);
-  } else if (questions.length > 0) {
-    dr.innerHTML = '<div class="dr-questions">' +
-      '<div class="q-title">Pending Questions</div>' +
-      questions.map(q =>
-        '<div class="q-item"><b>' + esc(q.id) + '</b>: ' + esc(q.text) +
+function switchDRTab(tab) {
+  window._drActiveTab = tab;
+  window._drLocalContent = (tab === 'notes');
+  updateDynamicRegion();
+}
+window.switchDRTab = switchDRTab;
+
+function renderDRTabs() {
+  var active = window._drActiveTab;
+  var questions = window._drQuestions || [];
+  var taskCount = window._drTaskCount || 0;
+  var tabs = [
+    {id:'starter', label:'Starter'},
+    {id:'tasks', label:'Tasks' + (taskCount > 0 ? ' (' + taskCount + ')' : '')},
+    {id:'notes', label:'Notes'},
+    {id:'questions', label:'Questions' + (questions.length > 0 ? ' (' + questions.length + ')' : '')},
+    {id:'activity', label:'Activity'},
+  ];
+  return '<div style="display:flex;gap:2px;margin-bottom:8px;flex-wrap:wrap">' +
+    tabs.map(function(t) {
+      var isActive = t.id === active;
+      var style = isActive
+        ? 'background:#2a2a4e;color:#ccc;border-color:#4a4a6e'
+        : 'background:transparent;color:#666;border-color:#2a2a3e';
+      var badge = (t.id === 'questions' && questions.length > 0) ? ' style="color:#f0ad4e"' : '';
+      return '<span onclick="switchDRTab(&quot;' + t.id + '&quot;)" style="cursor:pointer;padding:4px 10px;border-radius:12px;font-size:11px;border:1px solid;' + style + '"' + badge + '>' + t.label + '</span>';
+    }).join('') + '</div>';
+}
+
+function renderStarterTab() {
+  return '<div class="dr-chips">' +
+    '<div class="suggestions-label" style="font-size:11px;color:#666;margin-bottom:4px">Try saying or typing</div>' +
+    SUGGESTION_CHIPS.map(function(c) {
+      return '<span class="suggestion" onclick="trySuggestion(this)">' +
+        c.label + (c.desc ? ' — ' + c.desc : '') + '</span>';
+    }).join('') + '</div>';
+}
+
+function renderQuestionsTab() {
+  var questions = window._drQuestions || [];
+  if (questions.length === 0) return '<div style="color:#666;font-size:12px;text-align:center;padding:12px">No pending questions</div>';
+  return '<div class="dr-questions">' +
+    questions.map(function(q) {
+      return '<div class="q-item"><b>' + esc(q.id) + '</b>: ' + esc(q.text) +
         (q.detail ? '<div style="color:#999;font-size:11px;margin-top:2px;white-space:pre-wrap">' + esc(q.detail) + '</div>' : '') +
         '<div class="q-actions">' +
         '<button class="q-btn q-yes" data-qid="' + q.id + '" data-ans="Yes">Yes</button>' +
         '<button class="q-btn q-no" data-qid="' + q.id + '" data-ans="No">No</button>' +
         '<input class="q-input" data-qid="' + q.id + '" placeholder="Or type a response...">' +
         '<button class="q-btn q-send" data-qid="' + q.id + '">Send</button>' +
-        '</div></div>'
-      ).join('') + '</div>';
-  } else {
-    // Proactive status now shown in #core-status-bar instead
-    dr.innerHTML = '<div class="dr-chips">' +
-      '<div class="suggestions-label">Try saying or typing</div>' +
-      SUGGESTION_CHIPS.map(c =>
-        '<span class="suggestion" onclick="trySuggestion(this)">' +
-        c.label + (c.desc ? ' — ' + c.desc : '') + '</span>'
-      ).join('') +
-      '<div style="margin-top:8px"><span class="suggestion" onclick="showNotesInDR()" style="opacity:0.6">Browse Notes</span></div>' +
-      '</div>';
+        '</div></div>';
+    }).join('') + '</div>';
+}
+
+function updateDynamicRegion() {
+  const dr = document.getElementById('dynamic-region');
+  if (!dr) return;
+  // Skip re-render if user is typing in a question input
+  var activeInput = document.activeElement;
+  if (activeInput && activeInput.classList && activeInput.classList.contains('q-input')) return;
+
+  // If API pushed real content (e.g. media), show it directly
+  var content = window._drContent;
+  if (content && content.type && !content._isActivity) {
+    if (window._drLocalContent && window._drActiveTab === 'notes') {
+      // Notes content — show with tabs
+      dr.innerHTML = renderDRTabs() + renderDynamicContent(content);
+    } else if (!window._drLocalContent) {
+      dr.innerHTML = renderDynamicContent(content);
+    }
+    return;
+  }
+
+  // Auto-switch to questions tab if new questions arrive
+  var questions = window._drQuestions || [];
+  if (questions.length > 0 && window._drActiveTab === 'starter') {
+    window._drActiveTab = 'questions';
+  }
+
+  // Render tabs + active tab content
+  var tabsHtml = renderDRTabs();
+  var tabContent = '';
+  switch (window._drActiveTab) {
+    case 'starter': tabContent = renderStarterTab(); break;
+    case 'tasks': tabContent = '<div id="dr-tasks-container"></div>'; break;
+    case 'notes': showNotesInDR(); return;
+    case 'questions': tabContent = renderQuestionsTab(); break;
+    case 'activity': toggleActivity(); return;
+    default: tabContent = renderStarterTab();
+  }
+  dr.innerHTML = tabsHtml + tabContent;
+
+  // For tasks tab, move the existing task list content in
+  if (window._drActiveTab === 'tasks') {
+    var taskSection = document.getElementById('tasks-section');
+    var container = document.getElementById('dr-tasks-container');
+    if (taskSection && container) {
+      container.innerHTML = taskSection.innerHTML;
+    } else {
+      container.innerHTML = '<div style="color:#666;font-size:12px;text-align:center;padding:12px">No recent tasks</div>';
+    }
   }
 }
 
@@ -1415,7 +1474,7 @@ document.addEventListener('keydown', function(e) {
         var statusText = loopData.status === 'running'
           ? '<span class="core-running">Core: ' + esc(loopData.step || 'working') + '</span>'
           : '<span class="core-idle">Core: idle</span>';
-        var expandBtn = ' <span style="cursor:pointer;opacity:0.5;font-size:10px" onclick="toggleActivity()">activity</span>';
+        var expandBtn = '';
         csBar.innerHTML = statusText + expandBtn;
       }
     });
