@@ -1366,9 +1366,12 @@ document.addEventListener('keydown', function(e) {
       fetch(API_BASE + '/dynamic-content').then(r => r.json()).catch(() => ({})),
       fetch(API_BASE + '/core-status').then(r => r.json()).catch(() => ({status:'idle'}))
     ]).then(([dc, loopData]) => {
-      // Don't overwrite locally-set content (e.g. notes browser)
-      if (!window._drLocalContent) {
-        window._drContent = (dc && dc.type) ? dc : null;
+      // Only overwrite content if API has real content; preserve local content (e.g. notes browser)
+      if (dc && dc.type) {
+        window._drContent = dc;
+        window._drLocalContent = false;
+      } else if (!window._drLocalContent) {
+        window._drContent = null;
       }
       if (loopData.status === 'running') {
         window._drProactive = loopData.step || 'Working...';
