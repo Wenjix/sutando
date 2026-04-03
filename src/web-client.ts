@@ -1154,7 +1154,7 @@ function showNotesInDR() {
       '<b style="font-size:14px">Notes</b>' +
       '<span class="suggestion" onclick="window._drContent=null;updateDynamicRegion()" style="font-size:11px;cursor:pointer">Close</span></div>';
     html += notes.map(function(n){
-      return '<div style="padding:6px 0;border-bottom:1px solid #2a2a3e;cursor:pointer" onclick="showNoteInDR(\'' + n.slug + '\')">' +
+      return '<div style="padding:6px 0;border-bottom:1px solid #2a2a3e;cursor:pointer" onclick="showNoteInDR(&quot;' + n.slug + '&quot;)">' +
         '<span style="color:#7c83ff">' + n.title + '</span>' +
         '<span style="color:#666;font-size:11px;float:right">' + new Date(n.modified*1000).toLocaleDateString() + '</span></div>';
     }).join('');
@@ -1168,7 +1168,7 @@ function showNoteInDR(slug) {
   var DASH = 'http://' + window.location.hostname + ':7844';
   fetch(DASH + '/notes/' + slug).then(function(r){return r.text()}).then(function(text) {
     // Strip frontmatter
-    text = text.replace(/^---[^]*?---\n/, '');
+    text = text.replace(new RegExp('^---[\\s\\S]*?---\\n'), '');
     // Simple markdown
     text = text.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     text = text.replace(/^## (.+)$/gm, '<h2>$1</h2>');
@@ -1179,7 +1179,7 @@ function showNoteInDR(slug) {
     text = text.replace(inlineCodeRe, '<code style="background:#1a1a2e;padding:1px 4px;border-radius:2px">$1</code>');
     text = text.replace(/[*][*](.+?)[*][*]/g, '<strong>$1</strong>');
     text = text.replace(/^- (.+)$/gm, '<li>$1</li>');
-    text = text.replace(/\n\n/g, '<br><br>');
+    text = text.replace(new RegExp('\\n\\n', 'g'), '<br><br>');
     var html = '<div style="max-height:400px;overflow-y:auto">' +
       '<span class="suggestion" onclick="showNotesInDR()" style="font-size:11px;cursor:pointer;margin-bottom:8px;display:inline-block">&larr; Back</span>' +
       '<div style="font-size:13px;line-height:1.5">' + text + '</div></div>';
