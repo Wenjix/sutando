@@ -46,10 +46,18 @@ TRANSCRIPT="$1"  # Passed by PreCompact hook as $TRANSCRIPT_PATH
   ls "$REPO/tasks/"*.txt 2>/dev/null | head -5 || echo "None pending"
   echo ""
 
-  # Quota
+  # Quota (with reset times)
   echo "## Quota"
   if [ -f "$REPO/quota-state.json" ]; then
-    python3 -c "import json; d=json.load(open('$REPO/quota-state.json')); print(f'5h: {d[\"utilization_5h\"]:.0%}, 7d: {d[\"utilization_7d\"]:.0%}')" 2>/dev/null
+    python3 -c "
+import json
+from datetime import datetime
+d=json.load(open('$REPO/quota-state.json'))
+now=datetime.now()
+r5=datetime.fromtimestamp(int(d['headers']['anthropic-ratelimit-unified-5h-reset']))
+m5=int((r5-now).total_seconds()/60)
+print(f'5h: {d[\"utilization_5h\"]:.0%} (resets in {m5}min at {r5.strftime(\"%I:%M %p\")}), 7d: {d[\"utilization_7d\"]:.0%}')
+" 2>/dev/null
   fi
   echo ""
 
