@@ -21,17 +21,19 @@
 import 'dotenv/config';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
-import { existsSync, readFileSync, readdirSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { inlineTools } from './inline-tools.js';
 import { join } from 'node:path';
 import {
 	VoiceSession,
 	GeminiBatchSTTProvider,
 } from 'bodhi-realtime-agent';
+import { CartesiaSTTProvider } from './cartesia-stt-provider.js';
 import type { MainAgent, ToolDefinition } from 'bodhi-realtime-agent';
 function assertMacOS() { if (process.platform !== 'darwin') { console.error('Sutando requires macOS'); process.exit(1); } }
 import { workTool, cancelTask, startResultWatcher, startContextDropWatcher, logConversation, getRecentConversation, setTaskStatusCallback } from './task-bridge.js';
 import { buildSutandoSystemPrompt, buildVoiceAgentContext } from './voice-context.js';
+import { generateSpeech } from './cartesia-tts.js';
 
 // =============================================================================
 // Config
@@ -49,6 +51,13 @@ const SESSION_ID = `session_${Date.now()}`;
 const PHONE_PORT = Number(process.env.PHONE_PORT) || 3100;
 const PHONE_SERVER_URL = `http://localhost:${PHONE_PORT}`;
 const CALL_RESULTS_DIR = join(new URL('.', import.meta.url).pathname, '..', 'results', 'calls');
+
+// Model configuration — override via .env for cost/quality tuning
+const VOICE_MODEL = process.env.VOICE_MODEL || 'gemini-2.5-flash';
+const VOICE_NATIVE_AUDIO_MODEL = process.env.VOICE_NATIVE_AUDIO_MODEL || 'gemini-3.1-flash-live-preview';
+const STT_MODEL = process.env.STT_MODEL || 'gemini-3-flash-preview';
+const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY || '';
+const STT_PROVIDER = process.env.STT_PROVIDER || (CARTESIA_API_KEY ? 'cartesia' : 'gemini');
 
 const google = createGoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
 let sessionRef: VoiceSession | null = null;
@@ -279,9 +288,11 @@ async function main() {
 		initialAgent: 'main',
 		port: PORT,
 		host: HOST,
-		model: google('gemini-2.5-flash'),
-		geminiModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
-		sttProvider: new GeminiBatchSTTProvider({ apiKey: GEMINI_API_KEY, model: 'gemini-3-flash-preview' }),
+		model: google(VOICE_MODEL),
+		geminiModel: VOICE_NATIVE_AUDIO_MODEL,
+		sttProvider: STT_PROVIDER === 'cartesia' && CARTESIA_API_KEY
+			? new CartesiaSTTProvider({ apiKey: CARTESIA_API_KEY })
+			: new GeminiBatchSTTProvider({ apiKey: GEMINI_API_KEY, model: STT_MODEL }),
 		speechConfig: { voiceName: 'Puck' },
 		hooks: {
 			onSessionStart: (e) => console.log(`${ts()} [Session] Started: ${e.sessionId}`),
@@ -295,6 +306,21 @@ async function main() {
 
 	sessionRef = session;
 
+	/** Send text to Gemini via sendRealtimeInput (3.1+) or sendContent (2.5).
+	 *  See also: browser-tools.ts:injectText */
+	function injectText(text: string) {
+		try {
+			const transport = (session as any).transport;
+			if (VOICE_NATIVE_AUDIO_MODEL.includes('3.1')) {
+				transport.session.sendRealtimeInput({ text });
+			} else {
+				transport.sendContent([{ role: 'user', text }], true);
+			}
+		} catch (err) {
+			console.error(`${ts()} [InjectText] Error:`, err);
+		}
+	}
+
 	// Watch for results from the Claude Code session and deliver to user
 	// Only delivers when a client is connected — otherwise keeps files queued
 	// Watch for context drops (keyboard shortcut)
@@ -302,19 +328,27 @@ async function main() {
 	startContextDropWatcher((content) => {
 		if (session.sessionManager.isActive && session.clientConnected) {
 			console.log(`${ts()} [ContextDrop] Injecting into Gemini conversation`);
-			(session as any).transport.sendContent([
-				{ role: 'user', text: `[System: The user just dropped context via keyboard shortcut. Acknowledge briefly that you received it, then call work if it requires action.]\n\n${content}` },
-			], true);
+			injectText(`[System: The user just dropped context via keyboard shortcut. Acknowledge briefly that you received it, then call work if it requires action.]\n\n${content}`);
 		}
 	});
 
 	startResultWatcher((result) => {
 		console.log(`${ts()} [TaskBridge] Delivering result to user`);
-		setTimeout(() => {
-			(session as any).transport.sendContent([
-				{ role: 'user', text: `[System: Task completed. Briefly tell the user this result in one sentence:] ${result}` },
-			], true);
-		}, 1500);
+		if (session.sessionManager.isActive && session.clientConnected) {
+			// Voice is live — let Gemini speak the result conversationally
+			setTimeout(() => {
+				injectText(`[System: Task completed. Briefly tell the user this result in one sentence:] ${result}`);
+			}, 1500);
+		} else if (CARTESIA_API_KEY) {
+			// Voice not connected — generate Cartesia TTS for async playback
+			const truncated = (result.match(/^[\s\S]{0,500}[.!?]/)?.[0] || result.slice(0, 500)).trim();
+			generateSpeech(truncated, { category: 'result', label: 'task-result' }).then(audioPath => {
+				writeFileSync(join(WORKSPACE_DIR, 'dynamic-content.json'), JSON.stringify({
+					type: 'audio', src: audioPath, title: 'Task Complete',
+				}));
+				console.log(`${ts()} [CartesiaTTS] Audio generated: ${audioPath}`);
+			}).catch(err => console.error(`${ts()} [CartesiaTTS] ${err.message}`));
+		}
 	}, () => session.clientConnected);
 
 	let lastLoggedIndex = 0;
@@ -367,7 +401,7 @@ async function main() {
 			unlinkSync(callResultFile);
 			const transcript = data.transcript ?? 'No transcript available.';
 			console.log(`${ts()} [CallResult] Injecting call result into conversation`);
-			(session as any).transport.sendContent([{ role: 'user', text: `[System: The phone call just completed. Tell the user this result naturally.]\n\nCall transcript:\n${transcript}` }], true);
+			injectText(`[System: The phone call just completed. Tell the user this result naturally.]\n\nCall transcript:\n${transcript}`);
 		} catch (err) { console.error(`${ts()} [CallResult] Error:`, err); }
 	}, 2000);
 
@@ -396,6 +430,11 @@ async function main() {
 	console.log(`  Voice agent:   ws://localhost:${PORT}`);
 	console.log(`  Workspace:     ${WORKSPACE_DIR}`);
 	console.log(`  Session ID:    ${SESSION_ID}`);
+	console.log(`  Models:`);
+	console.log(`    Voice LLM:       ${VOICE_MODEL}`);
+	console.log(`    Native audio:    ${VOICE_NATIVE_AUDIO_MODEL}`);
+	console.log(`    STT:             ${STT_PROVIDER} (${STT_PROVIDER === 'cartesia' ? 'ink-whisper' : STT_MODEL})`);
+	console.log(`    Cartesia TTS:    ${CARTESIA_API_KEY ? 'sonic-3' : 'disabled'}`);
 	console.log();
 	console.log('Start the web client:');
 	console.log('  pnpm tsx ../bodhi_realtime_agent/examples/web-client.ts');
