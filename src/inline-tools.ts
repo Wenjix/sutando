@@ -638,21 +638,41 @@ else:
 			if (shareScreen && zoomReady) {
 				console.log(`${ts()} [Summon] Zoom ready — sharing screen...`);
 				try {
-					// Pure keyboard: Cmd+Shift+S opens share dialog, Tab to Share button, Enter to confirm
+					// Screen share: try menu bar first (most reliable), fall back to keyboard shortcut
 					execSync(`osascript -e '
 						tell application "zoom.us" to activate
 						delay 2
+						-- Try menu bar: Meeting > Share Screen (most reliable)
+						try
+							tell application "System Events"
+								tell process "zoom.us"
+									click menu item "Share Screen" of menu "Meeting" of menu bar 1
+								end tell
+							end tell
+						on error
+							-- Fallback: keyboard shortcut
+							tell application "System Events"
+								tell process "zoom.us"
+									keystroke "s" using {command down, shift down}
+								end tell
+							end tell
+						end try
+						delay 3
+						-- If share dialog appeared, click Share button or press Enter
 						tell application "System Events"
 							tell process "zoom.us"
-								keystroke "s" using {command down, shift down}
+								try
+									-- Look for Share button in the share dialog
+									set shareButtons to buttons of window 1 whose title is "Share"
+									if (count of shareButtons) > 0 then
+										click item 1 of shareButtons
+									else
+										keystroke return
+									end if
+								on error
+									keystroke return
+								end try
 							end tell
-						end tell
-						delay 3
-						-- Tab to the Share button and press Enter
-						tell application "System Events"
-							keystroke tab
-							delay 0.3
-							keystroke return
 						end tell
 					'`, { timeout: 15_000 });
 					console.log(`${ts()} [Summon] Screen share started`);
