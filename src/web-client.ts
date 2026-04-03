@@ -316,11 +316,8 @@ fetch('http://localhost:7844/stand-identity').then(r=>r.json()).then(s=>{
   <button class="btn-send" onclick="sendText()">Send</button>
 </div>
 
-<div id="tasks-header" style="display:none;margin:8px 0 2px;font-size:11px;color:#555;display:flex;justify-content:space-between;align-items:center">
-  <span>Tasks</span>
-  <span style="cursor:pointer;color:#4a6a7a" onclick="toggleAllTasks()">collapse all</span>
-</div>
-<div id="tasks"></div>
+<div id="tasks-header" style="display:none"></div>
+<div id="tasks" style="display:none"></div>
 
 <div class="section-label" style="cursor:pointer" onclick="$('debug').style.display=$('debug').style.display==='none'?'':'none'">Debug</div>
 <div id="debug" style="display:none"></div>
@@ -539,6 +536,7 @@ document.addEventListener('click', function(e) {
 function renderTasks() {
   const container = $('tasks');
   const entries = Object.entries(taskMap);
+  window._drTaskCount = entries.length;
   const hdr = $('tasks-header');
   if (entries.length === 0) { container.innerHTML = ''; if (hdr) hdr.style.display = 'none'; return; }
   if (hdr) hdr.style.display = 'flex';
@@ -1325,12 +1323,28 @@ function renderTabContent() {
     window._drLocalContent = false;
 
   } else if (tab === 'tasks') {
-    var taskSection = document.getElementById('tasks-section');
-    if (taskSection && taskSection.innerHTML.trim()) {
-      container.innerHTML = taskSection.innerHTML;
-    } else {
+    // Render tasks directly from taskMap
+    var entries = Object.entries(taskMap);
+    if (entries.length === 0) {
       container.innerHTML = '<div style="color:#666;font-size:12px;text-align:center;padding:12px">No recent tasks</div>';
+    } else {
+      var sorted = entries.sort(function(a,b) { return b[1].time - a[1].time; }).slice(0, 10);
+      var icons = { pending: '&#8987;', working: '&#9881;', done: '&#10003;', error: '&#10007;' };
+      container.innerHTML = sorted.map(function(entry) {
+        var id = entry[0], t = entry[1];
+        var ago = Math.round((Date.now() - t.time) / 1000);
+        var timeStr = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
+        var hasResult = t.result && t.status === 'done';
+        var isExpanded = expandedTasks.has(id);
+        var resultHtml = hasResult ? '<div style="display:' + (isExpanded ? 'block' : 'none') + ';padding:6px 12px;color:#8ab4c8;font-size:11px;white-space:pre-wrap;word-break:break-word;background:#0d1520;border-radius:6px;margin:4px 0">' + esc(t.result) + '</div>' : '';
+        return '<div style="padding:4px 0;border-bottom:1px solid #1a2a3a;cursor:' + (hasResult ? 'pointer' : 'default') + '" onclick="if(this.nextElementSibling)this.nextElementSibling.style.display=this.nextElementSibling.style.display===&quot;none&quot;?&quot;block&quot;:&quot;none&quot;">' +
+          '<span style="color:' + (t.status==='done' ? '#4ecca3' : t.status==='working' ? '#f0ad4e' : '#666') + ';font-size:12px">' + (icons[t.status] || '?') + '</span> ' +
+          '<span style="font-size:12px;color:#ccc">' + esc(t.text || id) + '</span>' +
+          '<span style="float:right;font-size:10px;color:#555">' + timeStr + '</span>' +
+          '</div>' + resultHtml;
+      }).join('');
     }
+    window._drLocalContent = false;
 
   } else if (tab === 'notes') {
     var DASH = 'http://' + window.location.hostname + ':7844';
