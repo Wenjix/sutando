@@ -31,6 +31,9 @@ function ts(): string { return new Date().toISOString().slice(11, 23); }
 let _sendTaskStatus: ((taskId: string, status: string, text: string, result?: string) => void) | null = null;
 const _deliveredResults = new Set<string>();
 
+const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const _pendingTasks = new Map<string, number>(); // taskId → submission epoch ms
+
 /** Register a callback to send task status to the web client. */
 export function setTaskStatusCallback(fn: (taskId: string, status: string, text: string, result?: string) => void): void {
 	_sendTaskStatus = fn;
@@ -76,6 +79,7 @@ export const workTool: ToolDefinition = {
 		const timestamp = new Date().toISOString();
 		const content = `id: ${taskId}\ntimestamp: ${timestamp}\ntask: ${task}\nreminder: Process ALL .txt files in tasks/ before restarting the watcher. Use: bash src/watch-tasks.sh (run_in_background: true)\n`;
 		writeFileSync(join(TASK_DIR, `${taskId}.txt`), content);
+		_pendingTasks.set(taskId, Date.now());
 		console.log(`${ts()} [TaskBridge] Task ${taskId}: ${task.slice(0, 100)}`);
 		_sendTaskStatus?.(taskId, 'working', task.slice(0, 60));
 		return {
@@ -193,6 +197,7 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 					console.log(`${ts()} [TaskBridge] Result ${file}: ${result.slice(0, 100)}`);
 					_sendTaskStatus?.(taskId, 'done', result.slice(0, 60), result);
 					_deliveredResults.add(file);
+					_pendingTasks.delete(taskId);
 					logConversation('core-agent', `[task:${taskId}] ${result.slice(0, 200)}`);
 					onResult(result);
 					// Notify agent-api directly, then delete file
@@ -204,6 +209,16 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 						}).catch(() => {});
 					} catch {}
 					setTimeout(() => { try { unlinkSync(path); } catch {} }, 10_000);
+				}
+			}
+
+			// Check for timed-out tasks
+			for (const [taskId, submittedAt] of _pendingTasks) {
+				if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
+					_pendingTasks.delete(taskId);
+					console.error(`${ts()} [TaskBridge] Task ${taskId} timed out after ${TASK_TIMEOUT_MS / 1000}s`);
+					_sendTaskStatus?.(taskId, 'timeout', 'Task timed out — core agent may be unresponsive');
+					onResult(`[Task timed out after ${Math.floor(TASK_TIMEOUT_MS / 60000)} minutes. The processing engine may need to be restarted.]`);
 				}
 			}
 		} catch {
