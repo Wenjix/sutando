@@ -12,6 +12,13 @@ For irreversible actions (sending email, deleting files, financial transactions)
 
 Be concise and direct. Prefer action over explanation. Default to the smallest action that produces the desired outcome. Always do less — make the minimal change needed.
 
+## Architecture rules
+
+- **Core services** (`src/`, `skills/phone-conversation/`) are general-purpose infrastructure. They provide generic capabilities (audio streaming, task bridge, tool execution) but must NOT contain feature-specific logic.
+- **Skills** (`skills/`) contain feature-specific logic. Each skill is self-contained and optional — core services work without any skill installed. When implementing new capabilities, start as a skill.
+- **Inline tools** are only for tools that need instant response from Gemini. Prefer skill scripts for complex logic. Only promote to inline if the user says the skill approach is too slow.
+- When refactoring, do NOT change prompts or tool behavior. Prompts are tuned through testing and must be preserved exactly.
+
 ## Repo rules
 
 Before creating a PR, check `gh pr list --state open` for an existing PR on the same topic. If one exists, push to its branch instead of creating a new PR.
