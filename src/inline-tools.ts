@@ -1323,6 +1323,26 @@ export const saveNoteTool: ToolDefinition = {
 	},
 };
 
+export const deleteNoteTool: ToolDefinition = {
+	name: 'delete_note',
+	description: 'Delete a specific note by name or slug.',
+	parameters: z.object({
+		name: z.string().describe('Note name or slug to delete'),
+	}),
+	execution: 'inline',
+	async execute(args) {
+		const { name } = args as { name: string };
+		try {
+			const files = readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+			const query = name.toLowerCase().replace(/\s+/g, '-');
+			const match = files.find(f => f.toLowerCase().includes(query));
+			if (!match) return { error: `No note matching "${name}" found` };
+			unlinkSync(join(NOTES_DIR, match));
+			return { status: 'deleted', title: match.replace('.md', '') };
+		} catch (e) { return { error: String(e) }; }
+	},
+};
+
 export const inlineTools = [
 	pressKeyTool, scrollTool, switchTabTool, openUrlTool,
 	switchAppTool, captureScreenTool, typeTextTool,
@@ -1330,7 +1350,7 @@ export const inlineTools = [
 	cancelTaskTool, toggleTasksTool, getCurrentTimeTool, summonTool, dismissTool,
 	joinZoomTool, joinGmeetTool, lookupMeetingIdTool, callContactTool,
 	describeScreenTool, clickTool, scrollAndDescribeTool, playRecordingTool, slideControlTool, fullscreenTool,
-	showViewTool, readNoteTool, saveNoteTool, ];
+	showViewTool, readNoteTool, saveNoteTool, deleteNoteTool, ];
 
 /** Tools available to any caller (including unverified) */
 export const anyCallerTools = [
