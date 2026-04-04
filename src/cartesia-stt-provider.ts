@@ -115,6 +115,7 @@ export class CartesiaSTTProvider implements STTProvider {
 				}
 			})
 			.catch(err => {
+				if (this.stopped) return;
 				console.error(`${ts()} [CartesiaSTT] Transcription error:`, err.message);
 			});
 	}

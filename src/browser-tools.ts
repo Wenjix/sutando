@@ -11,7 +11,7 @@ import type { ToolDefinition } from 'bodhi-realtime-agent';
 const ts = () => new Date().toLocaleTimeString('en-US', { hour12: false });
 
 /** Send text to Gemini via sendRealtimeInput (3.1+) or sendContent (2.5).
- *  See also: voice-agent.ts:injectText */
+ *  Used by voice-agent.ts and browser-tools recording narration. */
 export function injectText(session: any, text: string) {
 	try {
 		const model = process.env.VOICE_NATIVE_AUDIO_MODEL || 'gemini-3.1-flash-live-preview';
