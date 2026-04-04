@@ -130,7 +130,7 @@ const HTML = /* html */ `<!DOCTYPE html>
   .task-time { color: #444; font-size: 10px; }
 
   /* Dynamic region */
-  #dynamic-region { padding: 0 16px 8px; }
+  #dynamic-region { padding: 0 16px 8px; width: 100%; box-sizing: border-box; }
   #dynamic-region:empty { display: none; }
   #core-status-bar { text-align: center; font-size: 11px; color: #555; padding: 2px 16px; }
   #core-status-bar:empty { display: none; }
@@ -1279,8 +1279,8 @@ function ensureTabStructure() {
   var dr = document.getElementById('dynamic-region');
   if (!dr) return;
   if (!document.getElementById('dr-tabs')) {
-    dr.innerHTML = '<div id="dr-tabs" style="display:flex;gap:2px;margin-bottom:8px;flex-wrap:wrap"></div>' +
-      '<div id="dr-content" style="max-height:300px;overflow-y:auto"></div>';
+    dr.innerHTML = '<div id="dr-tabs" style="display:flex;gap:2px;margin-bottom:8px"></div>' +
+      '<div id="dr-content" style="max-height:300px;overflow-y:auto;min-width:100%"></div>';
   }
   updateTabHighlights();
 }
