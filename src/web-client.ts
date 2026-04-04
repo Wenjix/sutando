@@ -1280,7 +1280,7 @@ function ensureTabStructure() {
   if (!dr) return;
   if (!document.getElementById('dr-tabs')) {
     dr.innerHTML = '<div id="dr-tabs" style="display:flex;gap:2px;margin-bottom:8px"></div>' +
-      '<div id="dr-content" style="max-height:300px;overflow-y:auto;min-width:100%"></div>';
+      '<div id="dr-content" style="min-width:100%;word-wrap:break-word;overflow-wrap:break-word"></div>';
   }
   updateTabHighlights();
 }
@@ -1338,7 +1338,7 @@ function renderTabContent() {
         var timeStr = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
         var hasResult = t.result && t.status === 'done';
         var isExpanded = expandedTasks.has(id);
-        var resultHtml = hasResult ? '<div style="display:' + (isExpanded ? 'block' : 'none') + ';padding:6px 12px;color:#8ab4c8;font-size:11px;white-space:pre-wrap;word-break:break-word;background:#0d1520;border-radius:6px;margin:4px 0">' + esc(t.result) + '</div>' : '';
+        var resultHtml = hasResult ? '<div style="display:' + (isExpanded ? 'block' : 'none') + ';padding:6px 12px;color:#8ab4c8;font-size:11px;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;background:#0d1520;border-radius:6px;margin:4px 0;max-width:100%;box-sizing:border-box">' + esc(t.result) + '</div>' : '';
         return '<div style="padding:4px 0;border-bottom:1px solid #1a2a3a;cursor:' + (hasResult ? 'pointer' : 'default') + '" onclick="if(this.nextElementSibling)this.nextElementSibling.style.display=this.nextElementSibling.style.display===&quot;none&quot;?&quot;block&quot;:&quot;none&quot;">' +
           '<span style="color:' + (t.status==='done' ? '#4ecca3' : t.status==='working' ? '#f0ad4e' : '#666') + ';font-size:12px">' + (icons[t.status] || '?') + '</span> ' +
           '<span style="font-size:12px;color:#ccc">' + esc(t.text || id) + '</span>' +
