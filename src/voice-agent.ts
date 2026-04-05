@@ -55,6 +55,7 @@ const CALL_RESULTS_DIR = join(new URL('.', import.meta.url).pathname, '..', 'res
 // Model configuration — override via .env for cost/quality tuning
 const VOICE_MODEL = process.env.VOICE_MODEL || 'gemini-2.5-flash';
 const VOICE_NATIVE_AUDIO_MODEL = process.env.VOICE_NATIVE_AUDIO_MODEL || 'gemini-3.1-flash-live-preview';
+// STT_MODEL is the model name passed to GeminiBatchSTTProvider. Only used when STT_PROVIDER=gemini.
 const STT_MODEL = process.env.STT_MODEL || 'gemini-3-flash-preview';
 const CARTESIA_API_KEY = process.env.CARTESIA_API_KEY || '';
 const STT_PROVIDER = process.env.STT_PROVIDER || (CARTESIA_API_KEY ? 'cartesia' : 'gemini');
