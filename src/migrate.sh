@@ -116,6 +116,11 @@ if [ ! -d "$NVM_DIR" ]; then
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 fi
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+# Ensure nvm loads in new terminals
+grep -q 'NVM_DIR' ~/.zshrc 2>/dev/null || {
+  echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.zshrc
+  echo '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' >> ~/.zshrc
+}
 if ! which node >/dev/null 2>&1; then
   nvm install 24
 fi

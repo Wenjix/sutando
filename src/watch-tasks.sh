@@ -28,5 +28,6 @@ while true; do
     for f in "$TASKS_DIR"/*.txt; do echo "--- $(basename "$f") ---"; cat "$f"; done
     break
   fi
-  # False trigger — keep watching
+  # False trigger — brief pause before re-watching
+  sleep 2
 done
