@@ -26,10 +26,11 @@ export class CartesiaSTTProvider implements STTProvider {
 	private readonly model: string;
 	private readonly apiVersion: string;
 	private sampleRate = 16000;
-	private audioChunks: string[] = [];
+	private audioChunks: { data: string; bytes: number }[] = [];
 	private bufferBytes = 0;
 	private wasInterrupted = false;
 	private stopped = false;
+	private generation = 0; // incremented on stop() to discard stale callbacks
 
 	onTranscript?: (text: string, turnId: number | undefined) => void;
 	onPartialTranscript?: (text: string) => void;
@@ -57,6 +58,7 @@ export class CartesiaSTTProvider implements STTProvider {
 
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.generation++;
 		this.audioChunks = [];
 		this.bufferBytes = 0;
 		this.wasInterrupted = false;
@@ -64,7 +66,7 @@ export class CartesiaSTTProvider implements STTProvider {
 	}
 
 	feedAudio(base64Pcm: string): void {
-		const chunkBytes = Math.ceil(base64Pcm.length * 0.75);
+		const chunkBytes = Buffer.byteLength(base64Pcm, 'base64');
 		if (chunkBytes > MAX_BUFFER_BYTES) {
 			console.warn(`${ts()} [CartesiaSTT] Dropping oversized chunk (${chunkBytes} bytes > ${MAX_BUFFER_BYTES} cap)`);
 			return;
@@ -72,9 +74,9 @@ export class CartesiaSTTProvider implements STTProvider {
 		// FIFO eviction: drop oldest chunks to make room (preserves most recent speech)
 		while (this.bufferBytes + chunkBytes > MAX_BUFFER_BYTES && this.audioChunks.length > 0) {
 			const dropped = this.audioChunks.shift();
-			if (dropped) this.bufferBytes -= Math.ceil(dropped.length * 0.75);
+			if (dropped) this.bufferBytes -= dropped.bytes;
 		}
-		this.audioChunks.push(base64Pcm);
+		this.audioChunks.push({ data: base64Pcm, bytes: chunkBytes });
 		this.bufferBytes += chunkBytes;
 	}
 
@@ -86,9 +88,12 @@ export class CartesiaSTTProvider implements STTProvider {
 		this.bufferBytes = 0;
 
 		// Concatenate all buffered PCM chunks
-		const allAudio = Buffer.concat(chunks.map(b64 => Buffer.from(b64, 'base64')));
+		const allAudio = Buffer.concat(chunks.map(c => Buffer.from(c.data, 'base64')));
 
 		if (allAudio.length < 320) return; // skip near-empty buffers (< 10ms at 16kHz)
+
+		// Capture generation so we can discard results from a stale session
+		const gen = this.generation;
 
 		fetch('https://api.cartesia.ai/stt/bytes', {
 			method: 'POST',
@@ -111,7 +116,7 @@ export class CartesiaSTTProvider implements STTProvider {
 				return res.json();
 			})
 			.then((data: any) => {
-				if (this.stopped) return;
+				if (this.generation !== gen) return; // stale — session was stopped+restarted
 				const text = data?.text?.trim();
 				if (text && this.onTranscript) {
 					console.log(`${ts()} [CartesiaSTT] Transcript (turn ${turnId}): "${text.slice(0, 80)}${text.length > 80 ? '...' : ''}"`);
@@ -135,4 +140,8 @@ export class CartesiaSTTProvider implements STTProvider {
 		}
 		this.wasInterrupted = false;
 	}
+
+	/** Exposed for testing — current buffer byte count. */
+	get currentBufferBytes(): number { return this.bufferBytes; }
+	get chunkCount(): number { return this.audioChunks.length; }
 }

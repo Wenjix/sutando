@@ -67,29 +67,46 @@ describe('CartesiaSTTProvider', () => {
 			const chunk = makeChunk(1000); // 1000 decoded bytes
 			provider.feedAudio(chunk);
 			// base64 length * 0.75 ≈ decoded size
-			assert.ok((provider as any).bufferBytes > 0);
-			assert.ok((provider as any).bufferBytes <= 1100); // approximate
+			assert.ok(provider.currentBufferBytes > 0);
+			assert.equal(provider.currentBufferBytes, 1000); // exact: 500+500
 		});
 
-		it('evicts oldest chunks when buffer cap exceeded', () => {
-			// Use a provider with artificially low cap to test eviction
-			// MAX_BUFFER_BYTES is 25MB — we'll fill it by tracking chunk count
+		it('retains all chunks when under cap', () => {
 			const p = new CartesiaSTTProvider({ apiKey: 'k' });
-
-			// Feed 3 chunks of known size
 			const chunk1 = makeChunk(100);
 			const chunk2 = makeChunk(200);
 			const chunk3 = makeChunk(300);
 			p.feedAudio(chunk1);
 			p.feedAudio(chunk2);
 			p.feedAudio(chunk3);
+			assert.equal(p.chunkCount, 3);
+			assert.equal(p.currentBufferBytes, 600); // 100+200+300
+		});
 
-			// All 3 should fit (well under 25MB)
-			assert.equal((p as any).audioChunks.length, 3);
+		it('evicts oldest chunks when buffer cap is hit', () => {
+			const p = new CartesiaSTTProvider({ apiKey: 'k' });
+			// MAX_BUFFER_BYTES is 25MB. Fill with 10MB chunks to trigger eviction on 3rd.
+			const tenMB = 10 * 1024 * 1024;
+			const big1 = makeChunk(tenMB);
+			const big2 = makeChunk(tenMB);
+			p.feedAudio(big1);
+			p.feedAudio(big2);
+			assert.equal(p.chunkCount, 2);
+			assert.equal(p.currentBufferBytes, tenMB * 2);
 
-			// Verify FIFO: first chunk is chunk1
-			assert.equal((p as any).audioChunks[0], chunk1);
-			assert.equal((p as any).audioChunks[2], chunk3);
+			// Third 10MB chunk exceeds 25MB cap — oldest should be evicted
+			const big3 = makeChunk(tenMB);
+			p.feedAudio(big3);
+			assert.equal(p.chunkCount, 2); // big1 evicted, big2+big3 remain
+			assert.equal(p.currentBufferBytes, tenMB * 2);
+		});
+
+		it('drops single chunk exceeding MAX_BUFFER_BYTES', () => {
+			const p = new CartesiaSTTProvider({ apiKey: 'k' });
+			const huge = makeChunk(26 * 1024 * 1024); // 26MB > 25MB cap
+			p.feedAudio(huge);
+			assert.equal(p.chunkCount, 0);
+			assert.equal(p.currentBufferBytes, 0);
 		});
 	});
 
@@ -98,8 +115,8 @@ describe('CartesiaSTTProvider', () => {
 			provider.feedAudio(makeChunk(1000));
 			provider.feedAudio(makeChunk(1000));
 			provider.commit(1); // fire-and-forget (fetch will fail in tests — that's ok)
-			assert.equal((provider as any).audioChunks.length, 0);
-			assert.equal((provider as any).bufferBytes, 0);
+			assert.equal(provider.chunkCount, 0);
+			assert.equal(provider.currentBufferBytes, 0);
 		});
 
 		it('skips empty buffer', () => {
