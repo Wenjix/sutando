@@ -700,10 +700,12 @@ if __name__ == "__main__":
     server = http.server.HTTPServer((bind, PORT), Handler)
     import socket
     local_ip = socket.gethostbyname(socket.gethostname())
-    print(f"Sutando Agent API → http://localhost:{PORT}")
+    print(f"Sutando Agent API → http://{bind}:{PORT}")
     print(f"  POST /task  — submit a task")
     print(f"  GET  /status — health + capabilities")
     print(f"  GET  /ping   — alive check")
+    if bind == "127.0.0.1":
+        print(f"  (localhost only — set AGENT_API_BIND=0.0.0.0 for LAN access)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

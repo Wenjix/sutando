@@ -112,6 +112,7 @@ export const cancelTask: ToolDefinition = {
 			const mostRecent = files[files.length - 1];
 			const taskId = mostRecent.replace('.txt', '');
 			unlinkSync(join(TASK_DIR, mostRecent));
+			_pendingTasks.delete(taskId);
 			console.log(`${ts()} [TaskBridge] Cancelled task ${taskId}`);
 			_sendTaskStatus?.(taskId, 'cancelled', 'Task cancelled by user');
 			// Notify agent-api
@@ -180,6 +181,16 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 
 	// Check every 2 seconds for new result files
 	setInterval(() => {
+		// Check for timed-out tasks — runs every interval regardless of result files
+		for (const [taskId, submittedAt] of _pendingTasks) {
+			if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
+				_pendingTasks.delete(taskId);
+				console.error(`${ts()} [TaskBridge] Task ${taskId} timed out after ${TASK_TIMEOUT_MS / 1000}s`);
+				_sendTaskStatus?.(taskId, 'timeout', 'Task timed out — core agent may be unresponsive');
+				onResult(`[Task timed out after ${Math.floor(TASK_TIMEOUT_MS / 60000)} minutes. The processing engine may need to be restarted.]`);
+			}
+		}
+
 		try {
 			const files = readdirSync(RESULT_DIR).filter(f => f.endsWith('.txt')).sort();
 			if (files.length === 0) return;
@@ -210,16 +221,6 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 						}).catch(() => {});
 					} catch {}
 					setTimeout(() => { try { unlinkSync(path); } catch {} }, 10_000);
-				}
-			}
-
-			// Check for timed-out tasks
-			for (const [taskId, submittedAt] of _pendingTasks) {
-				if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
-					_pendingTasks.delete(taskId);
-					console.error(`${ts()} [TaskBridge] Task ${taskId} timed out after ${TASK_TIMEOUT_MS / 1000}s`);
-					_sendTaskStatus?.(taskId, 'timeout', 'Task timed out — core agent may be unresponsive');
-					onResult(`[Task timed out after ${Math.floor(TASK_TIMEOUT_MS / 60000)} minutes. The processing engine may need to be restarted.]`);
 				}
 			}
 		} catch {
