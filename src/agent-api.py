@@ -47,6 +47,40 @@ def _safe_id(raw: str) -> str:
     """Sanitize an ID to prevent path traversal. Only allow alphanumeric, dash, underscore, dot."""
     return re.sub(r'[^a-zA-Z0-9_\-.]', '', raw)
 
+
+def validate_twilio_signature(handler, body: str) -> bool:
+    """Validate X-Twilio-Signature if TWILIO_AUTH_TOKEN is configured.
+    Returns True if valid or if token not configured (local dev)."""
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    if not auth_token:
+        return True
+    import hmac, hashlib, base64
+    from urllib.parse import parse_qs
+
+    signature = handler.headers.get("X-Twilio-Signature", "")
+    if not signature:
+        return False
+
+    # Prefer static base URL to prevent Host header injection bypass.
+    # TWILIO_WEBHOOK_URL is the public ngrok/funnel URL Twilio sends webhooks to.
+    base_url = os.environ.get("TWILIO_WEBHOOK_URL", "")
+    if base_url:
+        url = base_url.rstrip("/") + handler.path
+    else:
+        host = handler.headers.get("Host", "localhost")
+        scheme = handler.headers.get("X-Forwarded-Proto", "https")
+        url = f"{scheme}://{host}{handler.path}"
+
+    params = parse_qs(body, keep_blank_values=True)
+    param_string = url
+    for key, values in sorted(params.items()):
+        param_string += key + values[0]
+
+    mac = hmac.new(auth_token.encode(), param_string.encode(), hashlib.sha1)
+    expected = base64.b64encode(mac.digest()).decode()
+    return hmac.compare_digest(expected, signature)
+
+
 REPO_DIR = Path(__file__).parent.parent
 TASK_DIR = REPO_DIR / "tasks"
 PORT = 7843
@@ -372,8 +406,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Check API token if configured. Returns True if authorized."""
         if not API_TOKEN:
             return True  # No token = no auth required (local use)
+        import hmac as _hmac
         token = self.headers.get("Authorization", "").replace("Bearer ", "")
-        if token == API_TOKEN:
+        if _hmac.compare_digest(token, API_TOKEN):
             return True
         self.send_json(401, {"error": "unauthorized"})
         return False
@@ -462,6 +497,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/twilio/"):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode()
+            if not validate_twilio_signature(self, body):
+                self.send_json(403, {"error": "invalid Twilio signature"})
+                return
             from urllib.parse import parse_qs
             form_data = parse_qs(body)
 
@@ -476,11 +514,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/voice/toggle":
+            if not self.check_auth():
+                return
             voice_desired_state = "connected" if voice_desired_state == "disconnected" else "disconnected"
             self.send_json(200, {"state": voice_desired_state})
             return
 
         if path == "/voice/set":
+            if not self.check_auth():
+                return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
@@ -492,6 +534,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/task-done":
+            if not self.check_auth():
+                return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
@@ -661,14 +705,16 @@ async function send(){
 
 
 if __name__ == "__main__":
-    bind = os.environ.get("AGENT_API_BIND", "0.0.0.0")
+    bind = os.environ.get("AGENT_API_BIND", "127.0.0.1")
     server = http.server.HTTPServer((bind, PORT), Handler)
     import socket
     local_ip = socket.gethostbyname(socket.gethostname())
-    print(f"Sutando Agent API → http://localhost:{PORT}")
+    print(f"Sutando Agent API → http://{bind}:{PORT}")
     print(f"  POST /task  — submit a task")
     print(f"  GET  /status — health + capabilities")
     print(f"  GET  /ping   — alive check")
+    if bind == "127.0.0.1":
+        print(f"  (localhost only — set AGENT_API_BIND=0.0.0.0 for LAN access)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

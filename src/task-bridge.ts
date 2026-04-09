@@ -31,6 +31,15 @@ function ts(): string { return new Date().toISOString().slice(11, 23); }
 let _sendTaskStatus: ((taskId: string, status: string, text: string, result?: string) => void) | null = null;
 const _deliveredResults = new Set<string>();
 
+const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const _pendingTasks = new Map<string, number>(); // taskId → submission epoch ms
+const _apiToken = process.env.SUTANDO_API_TOKEN || '';
+function _apiHeaders(): Record<string, string> {
+	const h: Record<string, string> = { 'Content-Type': 'application/json' };
+	if (_apiToken) h['Authorization'] = `Bearer ${_apiToken}`;
+	return h;
+}
+
 /** Register a callback to send task status to the web client. */
 export function setTaskStatusCallback(fn: (taskId: string, status: string, text: string, result?: string) => void): void {
 	_sendTaskStatus = fn;
@@ -77,6 +86,7 @@ export const workTool: ToolDefinition = {
 		const timestamp = new Date().toISOString();
 		const content = `id: ${taskId}\ntimestamp: ${timestamp}\ntask: ${task}\nreminder: Process ALL .txt files in tasks/ before restarting the watcher. Use: bash src/watch-tasks.sh (run_in_background: true)\n`;
 		writeFileSync(join(TASK_DIR, `${taskId}.txt`), content);
+		_pendingTasks.set(taskId, Date.now());
 		console.log(`${ts()} [TaskBridge] Task ${taskId}: ${task.slice(0, 100)}`);
 		_sendTaskStatus?.(taskId, 'working', task.slice(0, 60));
 		return {
@@ -108,10 +118,11 @@ export const cancelTask: ToolDefinition = {
 			const mostRecent = files[files.length - 1];
 			const taskId = mostRecent.replace('.txt', '');
 			unlinkSync(join(TASK_DIR, mostRecent));
+			_pendingTasks.delete(taskId);
 			console.log(`${ts()} [TaskBridge] Cancelled task ${taskId}`);
 			_sendTaskStatus?.(taskId, 'cancelled', 'Task cancelled by user');
 			// Notify agent-api
-			try { fetch('http://localhost:7843/task-done', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId, result: 'Cancelled by user' }) }).catch(() => {}); } catch {}
+			try { fetch('http://localhost:7843/task-done', { method: 'POST', headers: _apiHeaders(), body: JSON.stringify({ taskId, result: 'Cancelled by user' }) }).catch(() => {}); } catch {}
 			return { status: 'cancelled', taskId, message: 'Cancelled the most recent task.' };
 		} catch (err) {
 			return { status: 'error', message: `Failed to cancel: ${err instanceof Error ? err.message : err}` };
@@ -176,6 +187,16 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 
 	// Check every 2 seconds for new result files
 	setInterval(() => {
+		// Check for timed-out tasks — runs every interval regardless of result files
+		for (const [taskId, submittedAt] of _pendingTasks) {
+			if (Date.now() - submittedAt > TASK_TIMEOUT_MS) {
+				_pendingTasks.delete(taskId);
+				console.error(`${ts()} [TaskBridge] Task ${taskId} timed out after ${TASK_TIMEOUT_MS / 1000}s`);
+				_sendTaskStatus?.(taskId, 'timeout', 'Task timed out — core agent may be unresponsive');
+				onResult(`[Task timed out after ${Math.floor(TASK_TIMEOUT_MS / 60000)} minutes. The processing engine may need to be restarted.]`);
+			}
+		}
+
 		try {
 			const files = readdirSync(RESULT_DIR).filter(f => f.endsWith('.txt')).sort();
 			if (files.length === 0) return;
@@ -194,13 +215,14 @@ export function startResultWatcher(onResult: (result: string) => void, isClientC
 					console.log(`${ts()} [TaskBridge] Result ${file}: ${result.slice(0, 100)}`);
 					_sendTaskStatus?.(taskId, 'done', result.slice(0, 60), result);
 					_deliveredResults.add(file);
+					_pendingTasks.delete(taskId);
 					logConversation('core-agent', `[task:${taskId}] ${result.slice(0, 200)}`);
 					onResult(result);
 					// Notify agent-api directly, then delete file
 					try {
 						fetch('http://localhost:7843/task-done', {
 							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
+							headers: _apiHeaders(),
 							body: JSON.stringify({ taskId, result }),
 						}).catch(() => {});
 					} catch {}
