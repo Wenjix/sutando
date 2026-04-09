@@ -36,7 +36,9 @@ stand-avatar.png
 docs/stand-avatar.png
 docs/youtube/
 core-status.json
-tests/
+dynamic-content.json
+tests/*
+!tests/*.test.ts
 skills/personal-*/
 tests/security/*.md
 !tests/security/*.md.example

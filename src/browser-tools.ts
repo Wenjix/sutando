@@ -10,6 +10,25 @@ import type { ToolDefinition } from 'bodhi-realtime-agent';
 
 const ts = () => new Date().toLocaleTimeString('en-US', { hour12: false });
 
+/** Send text to Gemini via sendRealtimeInput when available, otherwise sendContent. */
+export function injectText(session: any, text: string) {
+	try {
+		const transport = session?.transport;
+		if (typeof transport?.session?.sendRealtimeInput === 'function') {
+			transport.session.sendRealtimeInput({ text });
+		} else if (typeof transport?.sendContent === 'function') {
+			transport.sendContent([{ role: 'user', text }], true);
+		} else {
+			console.warn(`${ts()} [InjectText] No supported text injection method on transport`);
+		}
+	} catch (err) {
+		console.error(`${ts()} [InjectText] Error:`, err);
+	}
+}
+
+// Vision model — override via .env (default: flash-lite for this trivial 20-word task)
+const VISION_MODEL = process.env.VISION_MODEL || 'gemini-3.1-flash-lite-preview';
+
 // --- Scroll ---
 
 export const scrollTool: ToolDefinition = {
@@ -194,7 +213,7 @@ async function describeScreenshot(imagePath: string, previousDescs: string[] = [
 			prompt = `You are narrating a screen recording aloud. Already spoken: ${recent}. Describe ONLY what is NEW or has changed. Use a natural continuation ("Scrolling down...", "Next...", "Now we see...", "Further down..."). Do NOT restart with "The screen shows/displays" — the viewer already knows what page this is. 1 short sentence, max 20 words.`;
 		}
 		const res = await fetch(
-			`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+			`https://generativelanguage.googleapis.com/v1beta/models/${VISION_MODEL}:generateContent?key=${apiKey}`,
 			{
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -383,9 +402,7 @@ export function setupRecordingHooks(session: any): void {
 export function onReconnect(session: any): void {
 	if (!isRecordingActive()) return;
 	try {
-		session.transport.sendContent([
-			{ role: 'user', text: '[System: You were narrating a screen demo. Continue where you left off — call describe_screen and keep narrating. Do NOT greet or say "I\'m back".]' },
-		], true);
+		injectText(session, '[System: You were narrating a screen demo. Continue where you left off — call describe_screen and keep narrating. Do NOT greet or say "I\'m back".]');
 	} catch {}
 }
 
@@ -430,9 +447,7 @@ export function startRecordingNarration(session: any): void {
 			console.log(`${ts()} [Recording] near end — stopped pushing`);
 			clearInterval(descTimer);
 			try {
-				session.transport.sendContent([
-					{ role: 'user', text: '[System: Recording ending soon. Finish your current sentence and stop.]' },
-				], true);
+				injectText(session, '[System: Recording ending soon. Finish your current sentence and stop.]');
 			} catch {}
 			return;
 		}
@@ -449,9 +464,7 @@ export function startRecordingNarration(session: any): void {
 			if (!existsSync('/tmp/sutando-screen-record.pid')) return;
 			const remaining = Math.round((durationMs - (Date.now() - startTime)) / 1000);
 			const alreadySaid = previousDescs.slice(0, -1).map((d, i) => `${i + 1}. ${d.slice(0, 40)}`).join('; ');
-			session.transport.sendContent([
-				{ role: 'user', text: `[System: ${remaining}s left. Already narrated: ${alreadySaid || 'nothing yet'}. Now narrate this NEW content only (1 short sentence, no repeats): "${desc}"]` },
-			], true);
+			injectText(session, `[System: ${remaining}s left. Already narrated: ${alreadySaid || 'nothing yet'}. Now narrate this NEW content only (1 short sentence, no repeats): "${desc}"]`);
 			console.log(`${ts()} [Recording] pushed: ${desc.slice(0, 60)}...`);
 		} catch (err) {
 			console.log(`${ts()} [Recording] push error: ${err}`);
@@ -470,9 +483,7 @@ export function startRecordingNarration(session: any): void {
 		narrationActive = false;
 		console.log(`${ts()} [Recording] timer fired — sending stop`);
 		try {
-			session.transport.sendContent([
-				{ role: 'user', text: '[System: Recording just ended. Say "The recording is complete." immediately.]' },
-			], true);
+			injectText(session, '[System: Recording just ended. Say "The recording is complete." immediately.]');
 		} catch {}
 	}, durationMs + 1000); // +1s buffer for auto-stop to finish
 }

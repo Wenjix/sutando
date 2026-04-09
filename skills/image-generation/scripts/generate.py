@@ -79,7 +79,7 @@ def generate_image(client, args):
     else:
         out_format = "PNG"
 
-    model = args.model or "gemini-2.5-flash-image"
+    model = args.model or os.environ.get("IMAGE_MODEL", "gemini-3.1-flash-image-preview")
     print(f"  Model: {model}", file=sys.stderr)
     print(f"  Prompt: {args.prompt[:100]}{'...' if len(args.prompt) > 100 else ''}", file=sys.stderr)
     print(f"  Generating image...", file=sys.stderr)
@@ -144,7 +144,7 @@ def generate_video(client, args):
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    model = args.model or "veo-3.1-generate-preview"
+    model = args.model or os.environ.get("VIDEO_MODEL", "veo-3.1-generate-preview")
     aspect = args.aspect or "16:9"
 
     print(f"  Model: {model}", file=sys.stderr)
