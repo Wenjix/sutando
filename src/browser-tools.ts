@@ -49,9 +49,10 @@ export const scrollTool: ToolDefinition = {
 				: '';
 			// Use Chrome's JavaScript scroll. If target specified, find matching scrollable element.
 			// Otherwise find the WIDEST scrollable container (main content over sidebars).
+			// Use single quotes in JS to avoid double-quote escaping issues inside AppleScript
 			const scrollFn = (cmd: string) => targetSelector
-				? `(function(){var sel="${targetSelector}";var e=null;document.querySelectorAll(sel).forEach(function(el){if(!e&&el.scrollHeight-el.clientHeight>50)e=el});if(!e){var best=null,bh=0;document.querySelectorAll("*").forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>100&&el.getBoundingClientRect().width<500){if(d>bh){best=el;bh=d}}});e=best}if(e){${cmd}}})()`
-				: `(function(){var best=document.scrollingElement||document.documentElement,bw=0;document.querySelectorAll("*").forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>200){var w=el.getBoundingClientRect().width;if(w>bw){best=el;bw=w}}});var e=best;${cmd}})()`;
+				? `(function(){var sel='${targetSelector}';var e=null;document.querySelectorAll(sel).forEach(function(el){if(!e&&el.scrollHeight-el.clientHeight>50)e=el});if(!e){var best=null,bh=0;document.querySelectorAll('*').forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>100&&el.getBoundingClientRect().width<500){if(d>bh){best=el;bh=d}}});e=best}if(e){${cmd}}})()`
+				: `(function(){var best=document.scrollingElement||document.documentElement,bw=0;document.querySelectorAll('*').forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>200){var w=el.getBoundingClientRect().width;if(w>bw){best=el;bw=w}}});var e=best;${cmd}})()`;
 			let js: string;
 			if (direction === 'top') {
 				js = scrollFn('e.scrollTop=0');
@@ -391,8 +392,12 @@ async function captureScreen(): Promise<string | null> {
 
 function scrollDown(pixels: number = 600) {
 	// Use widest-element heuristic (same as scrollTool) so embedded/nested scrollable containers work
-	const js = `(function(){var best=document.scrollingElement||document.documentElement,bw=0;document.querySelectorAll("*").forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>200){var w=el.getBoundingClientRect().width;if(w>bw){best=el;bw=w}}});best.scrollBy(0,${pixels})})()`;
-	execSync(`osascript -e 'tell application "Google Chrome" to tell active tab of front window to execute javascript "${js.replace(/"/g, '\\"')}"'`, { timeout: 5_000 });
+	// Use single quotes in JS to avoid double-quote escaping issues inside AppleScript
+	const js = `(function(){var best=document.scrollingElement||document.documentElement,bw=0;document.querySelectorAll('*').forEach(function(el){var d=el.scrollHeight-el.clientHeight;if(d>50&&el.clientHeight>200){var w=el.getBoundingClientRect().width;if(w>bw){best=el;bw=w}}});best.scrollBy(0,${pixels})})()`;
+	const tmpScroll = `/tmp/sutando-scroll-rec-${Date.now()}.scpt`;
+	writeFileSync(tmpScroll, `tell application "Google Chrome" to tell active tab of front window to execute javascript "${js.replace(/"/g, '\\"')}"`);
+	execSync(`osascript ${tmpScroll}`, { timeout: 5_000 });
+	try { unlinkSync(tmpScroll); } catch {}
 	// Keyboard fallback: Chrome skips visual repaints during Zoom screen share.
 	// Page Down forces a repaint through the OS input pipeline.
 	try {
