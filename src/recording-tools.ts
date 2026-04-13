@@ -414,7 +414,8 @@ export const openFileTool: ToolDefinition = {
 	name: 'open_file',
 	description:
 		'Open a file with the default macOS app. Pass a path, or omit to open the latest screen recording. ' +
-		'Use when user says "open the video", "open the file", "open that", "can you open it". ' +
+		'Use for: "open the video/recording", "open the file", "open that", "can you open it". ' +
+		'If the user says "open the log" or similar, ASK which log they mean (voice-agent, discord-bridge, etc.) — do NOT default to a recording. ' +
 		'Do NOT call play_video after this — wait for user to explicitly say "play". ' +
 		'Known files: "diagnostic tracker" or "diagnostics" = /tmp/phone-diagnostics-tracker.html, ' +
 		'"voice diagnostics" = /tmp/voice-diagnostics-tracker.html.',
@@ -428,10 +429,10 @@ export const openFileTool: ToolDefinition = {
 		demoStateRef.value = 'idle';
 		try {
 			let recPath = filePath ? filePath.replace(/^~/, process.env.HOME || '') : null;
-			// If Gemini hallucinated a path that doesn't exist, fall back to findRecording
+			// If Gemini passed a specific path that doesn't exist, return error — do NOT fall back to recording
 			if (recPath && !existsSync(recPath)) {
-				console.log(`${ts()} [OpenFile] path "${recPath}" does not exist, falling back to findRecording`);
-				recPath = null;
+				console.log(`${ts()} [OpenFile] path "${recPath}" does not exist`);
+				return { error: `File not found: ${recPath}. Ask the user for the correct path or use "work" to locate it.` };
 			}
 			// Fallback: find latest recording if no path given or path invalid
 			// Poll up to 18s — subtitle burn happens async after recording stops
