@@ -192,8 +192,19 @@ function burnLiveTranscriptSubtitles(videoPath: string): string | null {
 			console.log(`${ts()} [ScreenRecord] no ffmpeg with subtitles filter — skipping burn. Install: brew install ffmpeg-full`);
 			return null;
 		}
-		execSync(
-			`${ffmpegBin} -y -i "${videoPath}" -vf "subtitles=${LIVE_TRANSCRIPT_SRT_PATH}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,MarginV=30'" -c:v h264_videotoolbox -b:v 500k -c:a aac "${outPath}"`,
+		// Use execFileSync argv array to avoid shell interpolation of $ffmpegBin,
+		// $videoPath, and $outPath (same CodeQL #27 class fixed for sips below).
+		execFileSync(
+			ffmpegBin,
+			[
+				'-y',
+				'-i', videoPath,
+				'-vf', `subtitles=${LIVE_TRANSCRIPT_SRT_PATH}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,MarginV=30'`,
+				'-c:v', 'h264_videotoolbox',
+				'-b:v', '500k',
+				'-c:a', 'aac',
+				outPath,
+			],
 			{ timeout: 120_000 }
 		);
 		if (existsSync(outPath)) {
@@ -478,12 +489,18 @@ export const openFileTool: ToolDefinition = {
 			if (recPath.includes('sutando-recording')) {
 				writeFileSync('/tmp/sutando-playback-path', recPath);
 			}
-			execSync(`open "${recPath}"`, { timeout: 5_000 });
+			// execFileSync — no shell interpolation of caller-controlled recPath
+			// (same CodeQL js/command-line-injection class as #27).
+			execFileSync('open', [recPath], { timeout: 5_000 });
 			try { execSync(`osascript -e 'tell application "QuickTime Player" to activate'`, { timeout: 3_000 }); } catch {}
 			const size = statSync(recPath).size;
 			let duration_seconds: number | null = null;
 			try {
-				const dur = execSync(`/opt/homebrew/bin/ffprobe -v error -show_entries format=duration -of csv=p=0 "${recPath}"`, { timeout: 5_000 }).toString().trim();
+				const dur = execFileSync(
+					'/opt/homebrew/bin/ffprobe',
+					['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', recPath],
+					{ timeout: 5_000 }
+				).toString().trim();
 				duration_seconds = Math.round(parseFloat(dur));
 			} catch {}
 			console.log(`${ts()} [OpenFile] opened ${recPath} (${(size / 1024 / 1024).toFixed(1)}MB, ${duration_seconds ?? '?'}s)`);
