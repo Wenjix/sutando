@@ -39,6 +39,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var animationTimer: Timer?
     var animationPhase: CGFloat = 1.0
 
+    /// Fixed tmux socket path for the sutando-core session. The shell
+    /// (via startup.sh -S flag) and the app (launched by macOS with a
+    /// different TMPDIR due to sandboxing) must target the same socket
+    /// to find the same server. Without this, tmux has-session fails
+    /// app-side even when the session is alive shell-side.
+    let sutandoTmuxSocket = "/tmp/sutando-tmux.sock"
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request notification permission — only when running as .app bundle
         // (UNUserNotificationCenter crashes when run as raw binary)
@@ -155,6 +162,189 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.pollMuteState()
         }
+
+        // Watcher health: every 30s, verify the task watcher is running.
+        // If it's dead AND there are pending tasks AND it's been >60s since
+        // we last intervened, restart it and fire a notification. Chi's ask
+        // 2026-04-18: "can the app remind the CLI about watcher" — this
+        // goes one better by auto-restarting so no reminder is needed.
+        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.checkWatcher()
+        }
+    }
+
+    var lastWatcherAlert: Date = .distantPast
+    func checkWatcher() {
+        // pgrep -f watch-tasks
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        proc.arguments = ["-f", "watch-tasks"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return }
+        proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return  // watcher alive
+        }
+
+        // Read CLI's REAL status BEFORE alerting. If Claude Code is currently
+        // working (has an active Bash/tool child process under its pane),
+        // skip the alert — the CLI will handle the restart in the normal
+        // proactive-loop Step 9 without us spamming its stdin with
+        // 'watcher' keystrokes. Only alert when the CLI is genuinely idle
+        // (waiting on user input). Chi's ask: "does the app read the real
+        // state first? and remind about the watcher only when idle?"
+        if cliIsWorking() {
+            logToFile("watcher dead; CLI is working — skipping alert")
+            return
+        }
+
+        // Throttle: don't alert more than once every 120s so the CLI doesn't
+        // get flooded if it's slow to restart.
+        if Date().timeIntervalSince(lastWatcherAlert) < 120 { return }
+        lastWatcherAlert = Date()
+
+        // If Claude Code is running inside the `sutando-core` tmux session
+        // (launch via scripts/start-cli.sh), send the word `watcher` to
+        // its pane as if Chi typed it. The CLI parses that as a restart
+        // prompt and starts the watcher via its own run_in_background Bash
+        // — so the watcher's stdout routes through the task-notification
+        // pipe correctly. Any externally-started watcher (nohup etc.)
+        // has stdout → /dev/null and is useless.
+        if tmuxSendKeys(session: "sutando-core", keys: "watcher") {
+            notify("Sutando", "Task watcher down — sent 'watcher' to sutando-core tmux")
+            logToFile("watcher dead; tmux send-keys to sutando-core")
+            return
+        }
+
+        // Fallback: Claude Code isn't in the expected tmux session.
+        // Notify so Chi can restart manually.
+        notify("Sutando", "Task watcher is down — prompt the CLI to restart it (or start CLI via scripts/start-cli.sh)")
+        logToFile("watcher dead; notification fired (tmux session not found)")
+    }
+
+    /// True if Claude Code in the sutando-core tmux pane has any running
+    /// child process — indicating an active Bash/Tool call. False if only
+    /// the claude process itself is running (idle, waiting on stdin) or
+    /// if the tmux session can't be found.
+    func cliIsWorking() -> Bool {
+        let tmuxPath: String
+        if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/tmux") {
+            tmuxPath = "/opt/homebrew/bin/tmux"
+        } else if FileManager.default.fileExists(atPath: "/usr/local/bin/tmux") {
+            tmuxPath = "/usr/local/bin/tmux"
+        } else {
+            return false
+        }
+        // Get the pane's PID (the interactive shell wrapping claude).
+        // -S sutandoTmuxSocket so we find the same tmux server startup.sh
+        // created (different TMPDIR between shell and sandboxed .app).
+        let list = Process()
+        list.executableURL = URL(fileURLWithPath: tmuxPath)
+        list.arguments = ["-S", sutandoTmuxSocket, "list-panes", "-t", "sutando-core", "-F", "#{pane_pid}"]
+        let pipe = Pipe()
+        list.standardOutput = pipe
+        list.standardError = FileHandle.nullDevice
+        do { try list.run() } catch { return false }
+        list.waitUntilExit()
+        if list.terminationStatus != 0 { return false }
+        let panePid = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if panePid.isEmpty { return false }
+
+        // pgrep descendants of the pane PID. Claude Code itself is a child
+        // of the shell; its tool invocations are grandchildren. We want
+        // any non-claude descendant — a running bash/tool/subprocess.
+        // tmux launches the pane command directly — no intermediate shell.
+        // So `pane_pid` in a startup.sh-wrapped setup IS the claude process,
+        // and its DIRECT children are tool-call subprocesses + long-lived
+        // plugin helpers (sourcekit-lsp, caffeinate, bun, npm exec, etc.).
+        // The age filter distinguishes: a child with etime < 60s is a
+        // fresh tool call; older ones are background services that don't
+        // indicate active work.
+        let list2 = Process()
+        list2.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        list2.arguments = ["-P", panePid]
+        let listPipe = Pipe()
+        list2.standardOutput = listPipe
+        list2.standardError = FileHandle.nullDevice
+        do { try list2.run() } catch { return false }
+        list2.waitUntilExit()
+        let children = String(data: listPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .split(separator: "\n").map(String.init) ?? []
+        for childPid in children where !childPid.isEmpty {
+            if processAgeSeconds(pid: childPid) < 60 {
+                return true  // fresh child under pane_pid → active tool call
+            }
+        }
+        return false
+    }
+
+    /// Parse `ps -o etime= -p <pid>` → seconds. Returns Int.max on any
+    /// parse failure so old processes stay "old" and don't false-trigger
+    /// the cliIsWorking heuristic.
+    func processAgeSeconds(pid: String) -> Int {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "etime=", "-p", pid]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+        do { try ps.run() } catch { return Int.max }
+        ps.waitUntilExit()
+        if ps.terminationStatus != 0 { return Int.max }
+        // etime format: [DD-]HH:MM:SS | [HH:]MM:SS | MM:SS
+        var raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return Int.max }
+        var days = 0
+        var rest = raw
+        if let dashIdx = rest.firstIndex(of: "-") {
+            days = Int(rest[..<dashIdx]) ?? 0
+            rest = String(rest[rest.index(after: dashIdx)...])
+        }
+        let parts = rest.split(separator: ":").compactMap { Int($0) }
+        switch parts.count {
+        case 2: return days * 86400 + parts[0] * 60 + parts[1]
+        case 3: return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+        default: return Int.max
+        }
+    }
+
+    /// Send keystrokes to a tmux pane. Returns true if the session exists
+    /// and send-keys succeeded. False otherwise — caller should fall back
+    /// to a macOS notification.
+    func tmuxSendKeys(session: String, keys: String) -> Bool {
+        // Find tmux binary: Homebrew on Apple Silicon, /usr/local on Intel.
+        let tmuxPath: String
+        if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/tmux") {
+            tmuxPath = "/opt/homebrew/bin/tmux"
+        } else if FileManager.default.fileExists(atPath: "/usr/local/bin/tmux") {
+            tmuxPath = "/usr/local/bin/tmux"
+        } else {
+            return false
+        }
+        // Check session exists: `tmux has-session -t <name>` exits 0 if alive.
+        let has = Process()
+        has.executableURL = URL(fileURLWithPath: tmuxPath)
+        has.arguments = ["-S", sutandoTmuxSocket, "has-session", "-t", session]
+        has.standardOutput = FileHandle.nullDevice
+        has.standardError = FileHandle.nullDevice
+        do { try has.run() } catch { return false }
+        has.waitUntilExit()
+        if has.terminationStatus != 0 { return false }
+
+        // Session exists — send keys + Enter.
+        let send = Process()
+        send.executableURL = URL(fileURLWithPath: tmuxPath)
+        send.arguments = ["-S", sutandoTmuxSocket, "send-keys", "-t", session, keys, "Enter"]
+        send.standardOutput = FileHandle.nullDevice
+        send.standardError = FileHandle.nullDevice
+        do { try send.run() } catch { return false }
+        send.waitUntilExit()
+        return send.terminationStatus == 0
     }
 
     func pollMuteState() {
