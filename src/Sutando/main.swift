@@ -147,8 +147,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
 
-        // Poll mute/voice state every 3 seconds for menu bar indicator
-        Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        // Poll mute/voice state every 1 second. Previously 3s, but the seeing
+        // flash is a transient tool state (TTL ~3s) and a 3s poll has <50%
+        // probability of landing inside the TTL window — Chi saw seeing
+        // "happen long after" because the first flash was missed entirely.
+        // 1s makes the catch deterministic.
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.pollMuteState()
         }
     }
@@ -162,6 +166,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let isVoiceConnected = json["voiceConnected"] as? Bool ?? false
             // `state` added by PR #418. Absent on pre-#418 servers → default 'idle'.
             let agentState = (json["state"] as? String) ?? "idle"
+            // `label` added 2026-04-18 per Chi's "running a tool is not precise":
+            // optional specific tool name or core-status step.
+            let label = (json["label"] as? String) ?? ""
             DispatchQueue.main.async {
                 guard let self = self, let button = self.statusItem.button else { return }
                 if isVoiceConnected && isMuted {
@@ -172,6 +179,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     // dim until the NEXT semantic state change).
                     button.title = "🔇"
                     button.image = nil
+                    button.toolTip = "Sutando — muted"
                     self.stopAnimation()
                     self.currentAgentState = "idle"
                 } else {
@@ -185,14 +193,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     } else {
                         button.title = "S"
                     }
-                    // Drive animation from semantic state. `listening`/`speaking`/`working`
-                    // all animate ("any non-idle" per owner's 07:38Z B-option decision).
-                    if self.currentAgentState != agentState {
-                        self.currentAgentState = agentState
-                        if agentState == "idle" {
+                    button.toolTip = self.tooltipFor(state: agentState, muted: isMuted, voiceConnected: isVoiceConnected, label: label)
+                    // When voice is disconnected, only tool-track states
+                    // (working / seeing) keep animating — those come from
+                    // server-side tool code and mean the core loop or a
+                    // screen capture is genuinely doing something. Browser-
+                    // track states (listening / speaking) depend on a live
+                    // WebSocket and would otherwise animate on stale cached
+                    // state. Keeps "the agent is working" visible when
+                    // voice is off while fixing the "disconnected but
+                    // blinking on stale listening" bug.
+                    let effectiveState: String
+                    if !isVoiceConnected && (agentState == "listening" || agentState == "speaking") {
+                        effectiveState = "idle"
+                    } else {
+                        effectiveState = agentState
+                    }
+                    if self.currentAgentState != effectiveState {
+                        self.currentAgentState = effectiveState
+                        if effectiveState == "idle" {
                             self.stopAnimation()
                         } else {
-                            self.startAnimation()
+                            self.startAnimation(for: effectiveState)
                         }
                     }
                 }
@@ -201,17 +223,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.resume()
     }
 
-    /// Start a slow opacity pulse on the menu-bar icon. Visible motion, but
-    /// not distracting — ~0.6s fade cycle, dropping to 55% opacity then back.
-    /// Called only on idle → non-idle transition from pollMuteState.
-    func startAnimation() {
+    /// Start an opacity pulse with timing tuned to the current agent state.
+    /// Each non-idle state gets a distinct signature — interval (speed) +
+    /// low opacity (swing depth) — so the menu bar conveys what the agent
+    /// is doing without tab-switching.
+    ///
+    ///   listening  — 0.30s tick, 0.45↔1.00 (gentle slow pulse)
+    ///   speaking   — 0.15s tick, 0.70↔1.00 (rapid subtle pulse)
+    ///   working    — 0.50s tick, 0.25↔1.00 (slow deep swing, "thinking")
+    ///   seeing     — 0.10s tick, 0.55↔1.00 (very fast, "scanning")
+    ///
+    /// Called on every non-idle state transition (including non-idle →
+    /// different non-idle), so the timer is rebuilt with the new signature
+    /// whenever the agent state changes.
+    func startAnimation(for state: String) {
         animationTimer?.invalidate()
         animationPhase = 1.0
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+
+        let interval: TimeInterval
+        let lowAlpha: CGFloat
+        switch state {
+        case "speaking":
+            interval = 0.15
+            lowAlpha = 0.70
+        case "working":
+            interval = 0.50
+            lowAlpha = 0.25
+        case "seeing":
+            interval = 0.10
+            lowAlpha = 0.55
+        default: // "listening" and any future non-idle state
+            interval = 0.30
+            lowAlpha = 0.45
+        }
+
+        animationTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard let self = self, let button = self.statusItem.button else { return }
-            // Toggle between 1.0 and 0.55 every tick → 600ms cycle
-            self.animationPhase = self.animationPhase > 0.75 ? 0.55 : 1.0
+            let midpoint = (lowAlpha + 1.0) / 2.0
+            self.animationPhase = self.animationPhase > midpoint ? lowAlpha : 1.0
             button.alphaValue = self.animationPhase
+        }
+    }
+
+    /// Human-readable tooltip for the menu bar icon. Shows the current
+    /// semantic state on hover so the user can verify the visual without
+    /// guessing which pulse they're seeing.
+    func tooltipFor(state: String, muted: Bool, voiceConnected: Bool, label: String = "") -> String {
+        // Tool-track states (working / seeing) describe real server-side
+        // activity and apply whether voice is up or not. Showing "voice
+        // disconnected" while the icon is pulsing working is misleading —
+        // the pulse and the tooltip must tell the same story. When a
+        // specific label is provided (tool name or core-status step),
+        // it replaces the generic "a tool" text per Chi's "running a
+        // tool is not precise" ask.
+        let voiceSuffix = voiceConnected ? "" : " (voice off)"
+        switch state {
+        case "working":
+            let what = label.isEmpty ? "a tool" : label
+            return "Sutando — running \(what)\(voiceSuffix)"
+        case "seeing":
+            let what = label.isEmpty ? "your screen" : label
+            return "Sutando — reading \(what)\(voiceSuffix)"
+        default: break
+        }
+        if !voiceConnected { return "Sutando — voice disconnected" }
+        if muted { return "Sutando — muted" }
+        switch state {
+        case "listening": return "Sutando — listening"
+        case "speaking":  return "Sutando — speaking"
+        case "idle":      return "Sutando — idle"
+        default:          return "Sutando — \(state)"
         }
     }
 
