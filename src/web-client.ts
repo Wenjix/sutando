@@ -1587,10 +1587,26 @@ function reportAgentState() {
       state = 'listening';
     }
   }
-  if (state === _lastReportedAgentState) return;
+  // Re-assert voice=true on every agent-state heartbeat while connected.
+  // The server's _voiceState is a module-level variable that resets to
+  // false on web-client restart; without this, a mid-session restart of
+  // com.sutando.web-client leaves /sse-status reporting voiceConnected=false
+  // until the user manually toggles voice or reloads the tab.
+  // Only send on transition to avoid spamming the server with identical
+  // state on every 1s tick.
+  var needsReassert = connected && !_lastAssertedVoiceTrue;
+  if (state === _lastReportedAgentState && !needsReassert) return;
   _lastReportedAgentState = state;
-  fetch('/mute-state?state=' + state).catch(function() {});
+  var params = 'state=' + state;
+  if (connected) {
+    params += '&voice=true';
+    _lastAssertedVoiceTrue = true;
+  } else {
+    _lastAssertedVoiceTrue = false;
+  }
+  fetch('/mute-state?' + params).catch(function() {});
 }
+var _lastAssertedVoiceTrue = false;
 setInterval(reportAgentState, 1000);
 
 // ─── UI toggle (user gesture context!) ────────────────────
@@ -2260,6 +2276,22 @@ function readCoreStatus(): { running: boolean; step: string; stale: boolean } {
 }
 function coreIsRunning(): boolean { return readCoreStatus().running; }
 
+const VOICE_STATE_STALE_SECONDS = 120;
+function readVoiceState(): boolean | null {
+	try {
+		const url = new URL('../voice-state.json', import.meta.url);
+		const raw = readFileSync(url, 'utf-8');
+		const s = JSON.parse(raw) as { connected?: boolean; ts?: number };
+		const nowSec = Date.now() / 1000;
+		if (typeof s.ts === 'number' && nowSec - s.ts > VOICE_STATE_STALE_SECONDS && s.connected) {
+			return null;
+		}
+		return typeof s.connected === 'boolean' ? s.connected : null;
+	} catch {
+		return null;
+	}
+}
+
 function effectiveAgentState(): AgentState {
 	if (_toolState === 'seeing' && Date.now() > _seeingUntil) {
 		// Revert to pre-seeing tool state (usually 'working' if a tool was
@@ -2269,9 +2301,12 @@ function effectiveAgentState(): AgentState {
 		_preSeeingToolState = 'idle';
 	}
 	if (_toolState !== 'idle') return _toolState;
-	if (_browserState !== 'idle') return _browserState;
-	// No explicit state — fall through to core-status. If the proactive loop
-	// or any Claude Code pass is active, surface that as `working`.
+	// Core-agent (Claude Code proactive-loop / task pass) running beats the
+	// browser track — if core is actively doing work, that's the truer state
+	// than "user is currently speaking". Chi's 2026-04-19 ask: "when working
+	// and listening at the same time, working should be the state". Previously
+	// _browserState short-circuited here and the core track only ran when the
+	// user was silent, so core-work during an active turn never surfaced.
 	const core = readCoreStatus();
 	if (core.running) return 'working';
 	// Core is idle OR the file is stale. If stale, ask the tmux scrape for a
@@ -2282,6 +2317,7 @@ function effectiveAgentState(): AgentState {
 		const scrape = readTmuxStatus();
 		if (scrape.state === 'working') return 'working';
 	}
+	if (_browserState !== 'idle') return _browserState;
 	return 'idle';
 }
 
@@ -2335,7 +2371,14 @@ const server = createServer((req, res) => {
 		let label = '';
 		if (_toolState !== 'idle') {
 			label = _toolLabel;
-		} else if (_browserState === 'idle' && eff === 'working') {
+		} else if (eff === 'working') {
+			// Core-agent working — surface the step label regardless of
+			// whether the user's mic is hot. Previously gated on
+			// `_browserState === 'idle'`, which meant the tooltip stayed
+			// generic ("running a tool") whenever the voice tab was open.
+			// After PR #465 flipped the precedence (core beats browser),
+			// this gate became stale — keep the label in sync with the
+			// state it describes.
 			const core = readCoreStatus();
 			label = core.step;
 			// If core is stale and we're in fallback territory, prefer the
@@ -2345,11 +2388,16 @@ const server = createServer((req, res) => {
 				if (scrape.state === 'working') label = scrape.label;
 			}
 		}
+		// voice-state.json (written by voice-agent on connect/disconnect) is
+		// authoritative. Fall back to the browser-reported _voiceState cache
+		// if the file is missing or stale (see readVoiceState doc).
+		const vs = readVoiceState();
+		const voiceConnected = vs !== null ? vs : _voiceState;
 		res.writeHead(200, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({
 			clients: sseClients.length,
 			muted: _muteState,
-			voiceConnected: _voiceState,
+			voiceConnected,
 			state: eff,
 			label,
 		}));
@@ -2418,7 +2466,8 @@ const server = createServer((req, res) => {
 			}
 		}
 		res.writeHead(200, { 'Content-Type': 'application/json' });
-		res.end(JSON.stringify({ muted: _muteState, voiceConnected: _voiceState, state: effectiveAgentState() }));
+		const vs2 = readVoiceState();
+		res.end(JSON.stringify({ muted: _muteState, voiceConnected: vs2 !== null ? vs2 : _voiceState, state: effectiveAgentState() }));
 		return;
 	}
 
