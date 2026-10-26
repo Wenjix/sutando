@@ -129,8 +129,7 @@ export function directLoopbackBearerRouteAllowed(
 	headers: IncomingHttpHeaders,
 ): boolean {
 	const target = host ? hostNameFromHeader(host) : null;
-	const address = (remoteAddress ?? '').toLowerCase();
-	if (!(address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1')) return false;
+	if (!isLoopbackAddress(remoteAddress)) return false;
 	if (!target || !loopbackHostname(target.hostname) || !origin) return false;
 	try {
 		const parsedOrigin = new URL(origin);
@@ -166,12 +165,17 @@ export function browserRequestAllowed(origin: string | undefined, host: string |
 	}
 }
 
+export function isLoopbackAddress(remoteAddress: string | undefined): boolean {
+	const address = (remoteAddress ?? '').toLowerCase();
+	return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 export type VoiceConnectionDecision =
 	| { ok: true }
 	| { ok: false; code: number; reason: string };
 
 export function voiceConnectionDecision(
-	req: { url?: string; headers: IncomingHttpHeaders },
+	req: { url?: string; headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } },
 	token: string,
 ): VoiceConnectionDecision {
 	let url: URL;
@@ -180,15 +184,21 @@ export function voiceConnectionDecision(
 	} catch {
 		return { ok: false, code: 4401, reason: 'unauthorized' };
 	}
-	if (url.searchParams.get('probe') === '1') return { ok: true };
 	const originHeader = req.headers.origin;
 	const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
 	if (origin && !isLoopbackOrigin(origin)) return { ok: false, code: 4403, reason: 'origin not allowed' };
+	if (url.searchParams.get('probe') === '1') return { ok: true };
 	const accessToken = url.searchParams.get('access_token') ?? undefined;
-	if (!bearerMatches(req.headers.authorization, token) && !bearerMatches(accessToken, token)) {
+	if (bearerMatches(req.headers.authorization, token) || bearerMatches(accessToken, token)) {
+		return { ok: true };
+	}
+	// A presented credential that failed never falls through to the local escape.
+	if (req.headers.authorization !== undefined || accessToken !== undefined) {
 		return { ok: false, code: 4401, reason: 'unauthorized' };
 	}
-	return { ok: true };
+	// Native local clients (the desktop app) send no Origin and no bearer.
+	if (!origin && isLoopbackAddress(req.socket?.remoteAddress)) return { ok: true };
+	return { ok: false, code: 4401, reason: 'unauthorized' };
 }
 
 export function installVoiceConnectionGate(session: unknown, tokenProvider: () => string): void {
@@ -196,7 +206,7 @@ export function installVoiceConnectionGate(session: unknown, tokenProvider: () =
 		on(event: string, listener: () => void): unknown;
 		close(code: number, reason: string): unknown;
 	};
-	type Request = { url?: string; headers: IncomingHttpHeaders };
+	type Request = { url?: string; headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } };
 	type Transport = {
 		handleConnection?: (ws: Socket, req: Request) => unknown;
 	};

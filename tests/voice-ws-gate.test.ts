@@ -34,6 +34,25 @@ describe('voice WebSocket owner decision', () => {
 			ok: false, code: 4403, reason: 'origin not allowed',
 		});
 	});
+
+	it('admits a credential-free loopback client and refuses everything else', () => {
+		const loopback = (url: string, headers: IncomingHttpHeaders = {}) =>
+			({ url, headers, socket: { remoteAddress: '127.0.0.1' } });
+		assert.deepEqual(voiceConnectionDecision(loopback('/'), token), { ok: true });
+		assert.deepEqual(voiceConnectionDecision(loopback('/', { authorization: 'Bearer wrong' }), token), {
+			ok: false, code: 4401, reason: 'unauthorized',
+		});
+		assert.deepEqual(voiceConnectionDecision(loopback('/', { origin: 'https://evil.example' }), token), {
+			ok: false, code: 4403, reason: 'origin not allowed',
+		});
+		assert.deepEqual(voiceConnectionDecision(loopback('/?probe=1', { origin: 'https://evil.example' }), token), {
+			ok: false, code: 4403, reason: 'origin not allowed',
+		});
+		const nonLoopback = { url: '/', headers: {}, socket: { remoteAddress: '192.168.1.20' } };
+		assert.deepEqual(voiceConnectionDecision(nonLoopback, token), {
+			ok: false, code: 4401, reason: 'unauthorized',
+		});
+	});
 });
 
 describe('voice WebSocket gate installation', () => {

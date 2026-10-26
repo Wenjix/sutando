@@ -15,6 +15,11 @@ The browser sends the bearer only to the local voice WebSocket. The WebSocket
 server validates the owner token before attaching a session. A token is never
 derived from a client-supplied WebSocket authorization header.
 
+Native local clients that send no `Origin` and no bearer — the desktop app —
+are admitted only when the socket peer is loopback; any presented credential
+that fails to match stays refused. A `?probe=1` connection always passes that
+same Origin check first, then receives a single agent-state frame and closes.
+
 When `SUTANDO_API_TOKEN` is configured, that is the bearer. Otherwise the
 per-install token is stored in `<workspace>/state/agent-api.token` with mode
 `0600`. First-use publication uses a temporary file and a hard link so only one
