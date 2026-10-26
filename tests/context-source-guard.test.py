@@ -15,6 +15,10 @@ import tempfile
 import sys
 from pathlib import Path
 
+from _helpers.hermetic_env import isolate_os_environ, isolated_child_env
+
+isolate_os_environ()
+
 HOOK = str(Path(__file__).resolve().parent.parent / "hooks" / "context-source-guard.py")
 
 # --- fictitious fixtures (NOT real ids) ---
@@ -39,9 +43,9 @@ CFG_DIR.mkdir(parents=True, exist_ok=True)
 acc = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
 json.dump({"groups": {PUBLIC_CH: {"contextNotFrom": [PRIVATE_GUILD]}}}, acc); acc.close()
 
-ENV = {**os.environ, "CLAUDE_CONFIG_DIR": str(CFG_DIR), "SUTANDO_DISCORD_ACCESS_FILE": acc.name}
-ENV.pop("SUTANDO_WORKSPACE", None)  # dropped in v0.8 — must not influence resolution
-ENV.pop("DISCORD_BOT_TOKEN", None)  # force offline (cache-only) guild resolution
+# hermetic env: no SUTANDO_WORKSPACE (dropped in v0.8) and no DISCORD_BOT_TOKEN,
+# so guild resolution stays offline on the seeded cache either way.
+ENV = isolated_child_env(CLAUDE_CONFIG_DIR=str(CFG_DIR), SUTANDO_DISCORD_ACCESS_FILE=acc.name)
 
 
 def run(payload, env=ENV):
