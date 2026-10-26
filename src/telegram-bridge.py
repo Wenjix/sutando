@@ -328,6 +328,8 @@ def api(method, **params):
         return {"ok": False}
 
 _PENDING_NOTICES_FILE = REPO / "state" / "telegram-pending-notices.json"
+# A refused notice is retried at most this often; the file is rewritten only when it changes.
+_NOTICE_RETRY_DELAY = 30
 
 
 def _load_pending_notices():
@@ -358,8 +360,9 @@ def _send_redirect_notice(pending_notices, task_id, chat_id):
         if pending_notices.pop(task_id, None) is not None:
             _save_pending_notices(pending_notices)
         return True
-    pending_notices[task_id] = chat_id
-    _save_pending_notices(pending_notices)
+    if pending_notices.get(task_id) != chat_id:
+        pending_notices[task_id] = chat_id
+        _save_pending_notices(pending_notices)
     return False
 
 
@@ -817,6 +820,7 @@ def main():  # pragma: no cover
     allowed = load_allowed()
     pending_replies = {}  # task_id -> chat_id
     pending_notices = _load_pending_notices()  # task_id -> group chat_id owed a redirect notice
+    _notice_retry_at = {}
 
     heartbeat_file = REPO / "state" / "telegram-bridge.heartbeat"
     last_heartbeat = 0
@@ -1213,8 +1217,13 @@ def main():  # pragma: no cover
         except Exception as e:
             print(f"[Telegram] poll_progress error: {e}", flush=True)
 
+        _notice_now = time.time()
         for _task_id, _chat_id in list(pending_notices.items()):
-            _send_redirect_notice(pending_notices, _task_id, _chat_id)
+            if _notice_now < _notice_retry_at.get(_task_id, 0):
+                continue
+            _notice_retry_at[_task_id] = _notice_now + _NOTICE_RETRY_DELAY
+            if _send_redirect_notice(pending_notices, _task_id, _chat_id):
+                _notice_retry_at.pop(_task_id, None)
 
         # Check for results to send back (includes any orphaned-by-restart
         # routing recovered from the task files themselves — see

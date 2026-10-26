@@ -93,6 +93,12 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
                 raise outcome
             return outcome
         bridge.api = fake_api
+        saves = []
+        original_save = bridge._save_pending_notices
+        def counting_save(pending):
+            saves.append(dict(pending))
+            return original_save(pending)
+        bridge._save_pending_notices = counting_save
         pending_notices = {}
         try:
             self.assertFalse(
@@ -105,12 +111,15 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
             self.assertFalse(
                 bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
             self.assertEqual(pending_notices, {"task-9": "-100999"})
+            # Refusing again with the entry unchanged does not rewrite the file.
+            self.assertEqual(len(saves), 1)
             self.assertTrue(
                 bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
             self.assertEqual(pending_notices, {})
             self.assertEqual(json.loads(state_file.read_text()), {})
         finally:
             bridge.api = original_api
+            bridge._save_pending_notices = original_save
             bridge._PENDING_NOTICES_FILE = original_file
         self.assertEqual(
             calls,
