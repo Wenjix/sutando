@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "shared"))  # lint-workspace-resolution: allow-repo-root
 
 import workspace_lock  # noqa: E402
 from file_lock import locked_file  # noqa: E402

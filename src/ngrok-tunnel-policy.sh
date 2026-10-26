@@ -1,4 +1,6 @@
 #!/bin/bash
+# Bind webhook URL discovery to the supervised ngrok process's own API listener,
+# and accept only well-formed https base URLs, optionally pinned to a host.
 
 ngrok_api_port() {
   local pid="$1"
