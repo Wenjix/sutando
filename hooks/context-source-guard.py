@@ -139,8 +139,10 @@ def _unwrap_segments(tokens, depth=0):
     return [stripped]
 
 
-# python flags that swallow the next word as their argument, so it is not the script.
-_PYTHON_FLAGS_WITH_ARG = {"-c", "-m", "-W", "-X", "--check-hash-based-pycs"}
+# python flags that swallow the next word as their value yet still allow a script
+# operand after them. `-c`/`-m` are deliberately absent: they consume every later
+# word as argument text, so a reader name there is never an invoked script.
+_PYTHON_FLAGS_WITH_ARG = {"-W", "-X", "--check-hash-based-pycs"}
 
 
 def _is_python_invocation(tokens, i):

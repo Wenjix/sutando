@@ -178,7 +178,11 @@ for command in reader_invocations:
     run(read_task(PUBLIC_CH)[0])
     assert is_deny(run(reader_read(command))), f"{expected_command}: {command}"
 
-for command in ("cat src/discord-read.py", "grep x src/discord-read.py"):
+for command in (
+        "cat src/discord-read.py",
+        "grep x src/discord-read.py",
+        "python3 -m py_compile src/discord-read.py",
+        "python3 -c 'print(1)' src/discord-read.py"):
     run(read_task(PUBLIC_CH)[0])
     assert not is_deny(run(reader_read(command))), \
         f"a reader script path used as a non-invocation must remain allowed: {command}"
