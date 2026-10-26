@@ -16,6 +16,12 @@ sys.path.insert(0, str(REPO / "src"))
 import chat_secret_filter
 from chat_secret_filter import filter_chat_secrets, secret_handling_instruction
 
+try:
+    import secret_scanner as _secret_scanner
+    HAS_DETECT_SECRETS = _secret_scanner.DETECT_SECRETS_ACTIVE
+except Exception:
+    HAS_DETECT_SECRETS = False
+
 
 class TestChatSecretFilter(unittest.TestCase):
     def test_embedded_github_token_is_fully_redacted(self):
@@ -30,9 +36,20 @@ class TestChatSecretFilter(unittest.TestCase):
         sendgrid = "SG." + "a" * 22 + "." + "b" * 43
         result = filter_chat_secrets(f"keys {github} and {sendgrid}")
         self.assertNotIn("c" * 36, result.text)
-        self.assertNotIn("b" * 43, result.text)
         self.assertIn("GitHub Token", result.secret_types)
-        self.assertIn("SendGrid API Key", result.secret_types)
+        # SendGrid comes only from detect-secrets; absent it, the token stays.
+        if HAS_DETECT_SECRETS:
+            self.assertNotIn("b" * 43, result.text)
+            self.assertIn("SendGrid API Key", result.secret_types)
+
+    def test_multiple_fallback_secrets_on_one_line_are_redacted(self):
+        github = "ghp_" + "c" * 36
+        slack = "xoxb-12345678901-abcdefghij"
+        result = filter_chat_secrets(f"keys {github} and {slack}")
+        self.assertNotIn("c" * 36, result.text)
+        self.assertNotIn(slack, result.text)
+        self.assertIn("GitHub Token", result.secret_types)
+        self.assertIn("Slack Token", result.secret_types)
 
     def test_detector_secret_not_covered_by_fallback_redacts_its_line(self):
         sendgrid = "SG." + "a" * 22 + "." + "b" * 43
@@ -184,7 +201,8 @@ class TestChatSecretFilter(unittest.TestCase):
         self.assertIn("hello", result.text)
         self.assertNotIn("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", result.text)
         self.assertNotIn("BKcwggSjAgEAAoIBAQC7", result.text)
-        self.assertNotIn("b" * 43, result.text)
+        if HAS_DETECT_SECRETS:
+            self.assertNotIn("b" * 43, result.text)
 
     def test_fallback_matchers_are_bounded_on_long_unmatched_runs(self):
         for unit in ("http://", "eyJ", "M"):
