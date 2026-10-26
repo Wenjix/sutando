@@ -269,10 +269,19 @@ def _resolve_proactive_owner_id(env_override: str | None, access_data: dict) -> 
 def _reply_destination(chat_id, parsed, access_data: dict, env_override: str | None):
     if not any(action.kind == "dm-only" for action in parsed.actions):
         return chat_id
-    if int(chat_id) > 0:
+    try:
+        is_private = int(chat_id) > 0
+    except (TypeError, ValueError, OverflowError):
+        is_private = False
+    if is_private:
         return chat_id
     owner_id = _resolve_proactive_owner_id(env_override, access_data)
-    return int(owner_id) if owner_id is not None else None
+    if owner_id is None:
+        return None
+    try:
+        return int(owner_id)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 _DM_ONLY_UNROUTABLE_LOGGED: set[str] = set()

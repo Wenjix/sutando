@@ -61,6 +61,18 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
         self.assertIsNone(
             bridge._reply_destination(-100123, parsed, {"allowFrom": []}, None))
 
+    def test_non_integer_chat_id_is_not_treated_as_private(self):
+        parsed = bridge.parse_markers("[dm-only]\nPrivate reply")
+        self.assertEqual(
+            bridge._reply_destination("malformed-chat-id", parsed, {"allowFrom": ["42"]}, None),
+            42,
+        )
+
+    def test_non_integer_owner_id_is_unroutable(self):
+        parsed = bridge.parse_markers("[dm-only]\nPrivate reply")
+        self.assertIsNone(
+            bridge._reply_destination(-100123, parsed, {"allowFrom": ["not-an-id"]}, None))
+
     def test_reply_loop_routes_before_send_and_restores_origin(self):
         source = (REPO / "src" / "telegram-bridge.py").read_text()
         start = source.find(
