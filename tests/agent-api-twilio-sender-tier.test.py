@@ -86,6 +86,18 @@ class TwilioSenderTierTests(unittest.TestCase):
             self.assertEqual(api._twilio_caller_records(time.time()), {})
         self.assertNotIn("+14155550000", path.read_text())
 
+    def test_failed_prune_still_returns_the_live_caller(self):
+        path = api.WORKSPACE_DIR / "state" / "twilio-callers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"CA-old": {"caller": "+14155550000", "expires_at": 1},'
+            ' "CA-new": {"caller": "+14155551234", "expires_at": 9999999999}}')
+        with api._TWILIO_CALLERS_LOCK:
+            with unittest.mock.patch.object(
+                    api, "_write_twilio_callers", side_effect=OSError("read-only")):
+                records = api._twilio_caller_records(time.time())
+        self.assertEqual(records["CA-new"]["caller"], "+14155551234")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

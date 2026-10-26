@@ -258,7 +258,12 @@ def _twilio_caller_records(now: float) -> dict:
         and record["expires_at"] > now
     }
     if len(records) != len(raw):
-        _write_twilio_callers(path, records)
+        # Pruning is best-effort: an unwritable state dir must not fail a lookup
+        # whose valid record was still readable.
+        try:
+            _write_twilio_callers(path, records)
+        except OSError as exc:
+            print(f"[twilio] caller-record prune failed: {exc}")
     return records
 
 
