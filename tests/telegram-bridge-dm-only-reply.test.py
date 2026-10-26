@@ -7,6 +7,7 @@ from _helpers.hermetic_env import isolate_os_environ
 isolate_os_environ()
 
 import importlib.util
+import json
 import os
 import re
 import tempfile
@@ -80,24 +81,41 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
 
     def test_redirect_notice_retries_until_telegram_accepts(self):
         calls = []
-        outcomes = [{"ok": False}, {"ok": True}]
+        outcomes = [{"ok": False}, OSError("connection reset"), {"ok": True}]
         original_api = bridge.api
-        bridge.api = lambda method, **params: (
-            calls.append((method, params)), outcomes.pop(0))[1]
+        original_file = bridge._PENDING_NOTICES_FILE
+        state_file = Path(tempfile.mkdtemp()) / "pending-notices.json"
+        bridge._PENDING_NOTICES_FILE = state_file
+        def fake_api(method, **params):
+            calls.append((method, params))
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        bridge.api = fake_api
         pending_notices = {}
         try:
+            self.assertFalse(
+                bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
+            self.assertEqual(pending_notices, {"task-9": "-100999"})
+            # A refused notice is persisted so a bridge restart keeps retrying.
+            self.assertEqual(
+                json.loads(state_file.read_text()), {"task-9": "-100999"})
+            # A raising api() also counts as a failed notice, not a crash.
             self.assertFalse(
                 bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
             self.assertEqual(pending_notices, {"task-9": "-100999"})
             self.assertTrue(
                 bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
             self.assertEqual(pending_notices, {})
+            self.assertEqual(json.loads(state_file.read_text()), {})
         finally:
             bridge.api = original_api
+            bridge._PENDING_NOTICES_FILE = original_file
         self.assertEqual(
             calls,
             [("sendMessage", {"chat_id": "-100999",
-                              "text": "Sent you the reply in a private chat."})] * 2)
+                              "text": "Sent you the reply in a private chat."})] * 3)
 
 
 if __name__ == "__main__":

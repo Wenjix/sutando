@@ -196,6 +196,13 @@ for command in wrapped_invocations:
 run(read_task(PUBLIC_CH)[0])
 assert not is_deny(run(reader_read("bash -c 'echo hello'"))), \
     "a wrapped non-reader command must be allowed"
+for command in (
+        f"bash -c 'echo python3 src/discord-read.py {PRIVATE_CH}'",
+        f"printf 'python3 src/discord-read.py {PRIVATE_CH}\\n'",
+        f"echo python3 src/discord-read.py {PRIVATE_CH}"):
+    run(read_task(PUBLIC_CH)[0])
+    assert not is_deny(run(reader_read(command))), \
+        f"a command that only PRINTS a reader invocation must be allowed: {command}"
 run(read_task(PUBLIC_CH)[0])
 assert is_deny(run(reader_read(
     f"bash -c 'python3 src/discord-read.py \"$CH\" --operator'"))), \

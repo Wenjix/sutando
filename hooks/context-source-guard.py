@@ -139,6 +139,20 @@ def _unwrap_segments(tokens, depth=0):
     return [stripped]
 
 
+def _is_python_invocation(tokens, i):
+    """tokens[i] is a reader script word: invoked at argv[0], or after a python
+    executable (its own flags allowed, plus `uv run`/`env` launcher prefixes)."""
+    if i == 0:
+        return True
+    j = i - 1
+    while j > 0 and tokens[j].startswith("-"):
+        j -= 1
+    if not os.path.basename(tokens[j]).startswith("python"):
+        return False
+    prefix = tokens[:j]
+    return not prefix or prefix == ["uv", "run"]
+
+
 def _reader_cli_targets(cmd):
     try:
         segments = _shell_scan.segments(cmd)
@@ -165,11 +179,7 @@ def _reader_cli_targets(cmd):
         for i, token in enumerate(tokens):
             if os.path.basename(token) not in _READER_VALUE_OPTIONS:
                 continue
-            is_invocation = i == 0 or any(
-                os.path.basename(previous).startswith("python")
-                for previous in tokens[:i]
-            )
-            if is_invocation:
+            if _is_python_invocation(tokens, i):
                 invocations.append((tokens, i))
     if not invocations:
         return False, [], False

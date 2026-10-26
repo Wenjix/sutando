@@ -327,14 +327,39 @@ def api(method, **params):
         print(f"API error {e.code}: {body}")
         return {"ok": False}
 
+_PENDING_NOTICES_FILE = REPO / "state" / "telegram-pending-notices.json"
+
+
+def _load_pending_notices():
+    try:
+        return {str(k): v for k, v in json.loads(_PENDING_NOTICES_FILE.read_text()).items()}
+    except Exception:
+        return {}
+
+
+def _save_pending_notices(pending_notices):
+    try:
+        _PENDING_NOTICES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PENDING_NOTICES_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(pending_notices))
+        os.replace(tmp, _PENDING_NOTICES_FILE)
+    except Exception:
+        pass
+
+
 def _send_redirect_notice(pending_notices, task_id, chat_id):
-    """Post the group redirect notice; keep task_id queued when refused."""
-    notice = api("sendMessage", chat_id=chat_id,
-                 text="Sent you the reply in a private chat.")
+    """Post the group redirect notice; queue task_id when refused or raised."""
+    try:
+        notice = api("sendMessage", chat_id=chat_id,
+                     text="Sent you the reply in a private chat.")
+    except Exception:
+        notice = None
     if (notice or {}).get("ok"):
-        pending_notices.pop(task_id, None)
+        if pending_notices.pop(task_id, None) is not None:
+            _save_pending_notices(pending_notices)
         return True
     pending_notices[task_id] = chat_id
+    _save_pending_notices(pending_notices)
     return False
 
 
@@ -791,7 +816,7 @@ def main():  # pragma: no cover
     offset = None
     allowed = load_allowed()
     pending_replies = {}  # task_id -> chat_id
-    pending_notices = {}  # task_id -> group chat_id owed a redirect notice
+    pending_notices = _load_pending_notices()  # task_id -> group chat_id owed a redirect notice
 
     heartbeat_file = REPO / "state" / "telegram-bridge.heartbeat"
     last_heartbeat = 0
