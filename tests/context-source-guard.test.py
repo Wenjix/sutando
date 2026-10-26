@@ -164,6 +164,8 @@ assert not is_deny(run(reader_read(
 (reader_invocations, expected_command) = (
     [
         f"python3 -u src/discord-read.py {PRIVATE_CH} --operator",
+        f"python3 -W ignore src/discord-read.py {PRIVATE_CH} --operator",
+        f"python3 -X dev src/discord-read.py {PRIVATE_CH} --operator",
         f"/usr/bin/python3 src/discord-read.py {PRIVATE_CH} --operator",
         f"python3.11 src/discord-read.py {PRIVATE_CH} --operator",
         f"uv run python src/discord-read.py {PRIVATE_CH} --operator",
@@ -205,7 +207,7 @@ for command in (
         f"a command that only PRINTS a reader invocation must be allowed: {command}"
 run(read_task(PUBLIC_CH)[0])
 assert is_deny(run(reader_read(
-    f"bash -c 'python3 src/discord-read.py \"$CH\" --operator'"))), \
+    "bash -c 'python3 src/discord-read.py \"$CH\" --operator'"))), \
     "a wrapped non-literal reader target must be denied under an active blacklist"
 
 # 11) missing _shell_scan sibling: the hook must DENY a channel read, not crash-open.

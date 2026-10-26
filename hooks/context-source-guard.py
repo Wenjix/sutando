@@ -139,14 +139,23 @@ def _unwrap_segments(tokens, depth=0):
     return [stripped]
 
 
+# python flags that swallow the next word as their argument, so it is not the script.
+_PYTHON_FLAGS_WITH_ARG = {"-c", "-m", "-W", "-X", "--check-hash-based-pycs"}
+
+
 def _is_python_invocation(tokens, i):
     """tokens[i] is a reader script word: invoked at argv[0], or after a python
     executable (its own flags allowed, plus `uv run`/`env` launcher prefixes)."""
     if i == 0:
         return True
     j = i - 1
-    while j > 0 and tokens[j].startswith("-"):
-        j -= 1
+    while j > 0:
+        if tokens[j - 1] in _PYTHON_FLAGS_WITH_ARG:
+            j -= 2
+        elif tokens[j].startswith("-"):
+            j -= 1
+        else:
+            break
     if not os.path.basename(tokens[j]).startswith("python"):
         return False
     prefix = tokens[:j]
