@@ -197,9 +197,11 @@ class PureContractCases:
         )
         registry = self.c.SecretRegistry()
         self.c.register_assignments(registry, unit)
-        # The parsed value keeps the #-leading line, so it is masked wherever it recurs.
-        self.assertTrue(registry.contains("first\n# second\nthird"))
-        self.assertNotIn("second", registry.scrub("see first\n# second\nthird"))
+        # The parsed value keeps the #-leading line, so the WHOLE value — not just the
+        # per-line fragments — is masked wherever it recurs.
+        shown = registry.scrub("see first\n# second\nthird")
+        for fragment in ("first", "second", "third"):
+            self.assertNotIn(fragment, shown)
 
     def test_unterminated_quoted_private_key_does_not_expose_body_lines(self):
         unit = (
