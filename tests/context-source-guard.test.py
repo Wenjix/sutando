@@ -161,6 +161,26 @@ assert not is_deny(run(reader_read(
     f"python3 src/discord-read.py {PRIVATE_CH} --operator"))), \
     "reader CLI must remain available without a recorded serving channel"
 
+(reader_invocations, expected_command) = (
+    [
+        f"python3 -u src/discord-read.py {PRIVATE_CH} --operator",
+        f"/usr/bin/python3 src/discord-read.py {PRIVATE_CH} --operator",
+        f"python3.11 src/discord-read.py {PRIVATE_CH} --operator",
+        f"uv run python src/discord-read.py {PRIVATE_CH} --operator",
+        f"env X=1 python3 src/discord-read.py {PRIVATE_CH} --operator",
+        f"true;python3 src/discord-read.py {PRIVATE_CH} --operator",
+    ],
+    "all Python reader invocations in a command segment must be detected",
+)
+for command in reader_invocations:
+    run(read_task(PUBLIC_CH)[0])
+    assert is_deny(run(reader_read(command))), f"{expected_command}: {command}"
+
+for command in ("cat src/discord-read.py", "grep x src/discord-read.py"):
+    run(read_task(PUBLIC_CH)[0])
+    assert not is_deny(run(reader_read(command))), \
+        f"a reader script path used as a non-invocation must remain allowed: {command}"
+
 # 9) inner-fail-closed: exception inside the gated section (non-empty blacklist) must DENY,
 #    not allow. Import the hook as a module and monkey-patch _resolve_guild to throw; the
 #    inner try/except re-raises SystemExit from _deny() correctly and wraps other exceptions.

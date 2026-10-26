@@ -97,17 +97,28 @@ _READER_FLAG_OPTIONS = {
 
 def _reader_cli_targets(cmd):
     try:
-        tokens = shlex.split(cmd)
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except Exception:
         if re.search(r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
             return True, [], True
         return False, [], False
-    indexes = [
-        i for i, token in enumerate(tokens)
-        if os.path.basename(token) in _READER_VALUE_OPTIONS
-        and (i == 0 or os.path.basename(tokens[i - 1]) in {"python", "python3"}
-             or tokens[i - 1] in {"&&", "||", ";", "|", "&"})
-    ]
+    separators = {"&&", "||", ";", "|", "&"}
+    indexes = []
+    segment_start = 0
+    for i, token in enumerate(tokens):
+        if token in separators:
+            segment_start = i + 1
+            continue
+        if os.path.basename(token) not in _READER_VALUE_OPTIONS:
+            continue
+        is_invocation = i == segment_start or any(
+            os.path.basename(previous).startswith("python")
+            for previous in tokens[segment_start:i]
+        )
+        if is_invocation:
+            indexes.append(i)
     if not indexes:
         return False, [], False
     targets = []
@@ -117,7 +128,7 @@ def _reader_cli_targets(cmd):
         flag_options = _READER_FLAG_OPTIONS[script]
         args = []
         for token in tokens[index + 1:]:
-            if token in {"&&", "||", ";", "|", "&"}:
+            if token in separators:
                 break
             args.append(token)
         positional = []
