@@ -330,6 +330,62 @@ def test_discord():
     asyncio.run(db._handle_discord_message(_chan_msg("U_S2", c2, g)))
     check("discord: channel @mention, channel allowlist excludes sender → ack", len(c2.sent) == 1, str(c2.sent))
 
+    task_root = Path(tempfile.mkdtemp(prefix="sutando-ack-empty-global-"))
+    original_tasks_dir = db.TASKS_DIR
+    db.TASKS_DIR = task_root
+    db._not_allowlisted_ack_at.clear()
+    db.ACCESS_FILE.write_text(json.dumps({"dmPolicy": "allowlist", "allowFrom": []}))
+    empty_allow = _FakeChan(556)
+    try:
+        asyncio.run(db._handle_discord_message(_chan_msg("U_EMPTY", empty_allow, g)))
+    except Exception:
+        pass
+    check(
+        "discord: empty global allowlist blocks stranger task and acknowledges mention",
+        not list(task_root.glob("task-*.txt")) and len(empty_allow.sent) == 1,
+        f"tasks={list(task_root.glob('task-*.txt'))!r} sent={empty_allow.sent!r}",
+    )
+
+    db._not_allowlisted_ack_at.clear()
+    unaddressed = _FakeChan(557)
+    unaddressed_msg = _chan_msg("U_UNADDRESSED", unaddressed, g)
+    unaddressed_msg.mentions = []
+    try:
+        asyncio.run(db._handle_discord_message(unaddressed_msg))
+    except Exception:
+        pass
+    check(
+        "discord: empty global allowlist sends no acknowledgement when unaddressed",
+        not list(task_root.glob("task-*.txt")) and not unaddressed.sent,
+        f"tasks={list(task_root.glob('task-*.txt'))!r} sent={unaddressed.sent!r}",
+    )
+
+    db.ACCESS_FILE.write_text(json.dumps({"dmPolicy": "pairing", "allowFrom": []}))
+    pairing_requests = []
+    original_pairing_prompt = db._deliver_pairing_prompt
+
+    async def record_pairing_prompt(channel, code, username, sender_id, allowed):
+        pairing_requests.append(sender_id)
+        return "test"
+
+    db._deliver_pairing_prompt = record_pairing_prompt
+    try:
+        asyncio.run(db._handle_discord_message(_chan_msg("U_PAIRING", _FakeChan(558), g)))
+    except Exception:
+        pass
+    finally:
+        db._deliver_pairing_prompt = original_pairing_prompt
+        db.TASKS_DIR = original_tasks_dir
+    pairing_doc = json.loads(db.ACCESS_FILE.read_text())
+    check(
+        "discord: pairing policy still creates onboarding for empty global allowlist",
+        pairing_requests == ["U_PAIRING"]
+        and pairing_doc.get("pending", {}).get(
+            next(iter(pairing_doc.get("pending", {})), ""), {}).get("senderId") == "U_PAIRING"
+        and not list(task_root.glob("task-*.txt")),
+        f"pairing={pairing_requests!r} pending={pairing_doc.get('pending')!r}",
+    )
+
     # send failure is swallowed (covers the except branch)
     class _BoomChan:
         id = 888

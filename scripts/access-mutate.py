@@ -305,6 +305,11 @@ def _group_rm_allow(channel_id: str, sender_ids: list[str]) -> dict:
         if not removed:
             return None, {"ok": True, "removed": [], "skipped": sender_ids}
         allow = [a for a in allow if a not in sender_ids]
+        if entry.get("allowFrom") and not allow:
+            return None, {
+                "ok": False,
+                "error": "cannot remove the last channel allowlist member; use `group rm <ch>` to remove the channel or `group add <ch>` to add a member",
+            }
         entry["allowFrom"] = allow
         groups[channel_id] = entry
         data["groups"] = groups
