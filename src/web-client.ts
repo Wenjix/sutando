@@ -23,7 +23,7 @@ import { readBodyCapped } from './http-body-limit.js';
 const HTTP_PORT = Number(process.env.CLIENT_PORT) || 8080;
 const HTTP_HOST = process.env.CLIENT_HOST || '0.0.0.0'; // '0.0.0.0' binds to all interfaces for EC2
 const WS_PORT = Number(process.env.PORT) || 9900;
-const AGENT_API_PORT = Number(process.env.SUTANDO_AGENT_API_PORT) || 7843;
+const AGENT_API_PORT = Number(process.env.SUTANDO_AGENT_API_PORT || process.env.AGENT_API_PORT) || 7843;
 const DEFAULT_WS_URL = `ws://localhost:${WS_PORT}`;
 // Opt-in LAN sharing. The voice WS (WS_PORT) binds loopback only, so a browser
 // on another device on the same network can't reach it. When enabled, this
