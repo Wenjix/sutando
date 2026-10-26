@@ -225,6 +225,17 @@ class TaskMediaRoute(unittest.TestCase):
             pass
         self.assertEqual(self._media_posts(), [], "guest/unknown provenance never earns the Team allowance")
 
+    def test_task_media_upload_without_provenance_fails_closed(self):
+        # The task file is gone: confinement can't be resolved, so the upload
+        # must withhold — never fall back to the plain allowlist read.
+        mod = self.mod
+        attachment = self._attachment()
+        status, reason = mod._upload_task_attachment(
+            "task-missing", 0, attachment, confine_root=mod._CONFINE_UNRESOLVED)
+        self.assertEqual(status, "note")
+        self.assertEqual(self._media_posts(), [])
+        self.assertIn("provenance", reason)
+
     def test_team_dedup_requeue_attaches_from_the_original_tasks_dir(self):
         """A requeue's body is the ORIGINAL body (media instruction naming the
         original's dir) and it answers the ORIGINAL delivery — so that is the dir

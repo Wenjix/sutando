@@ -5333,9 +5333,16 @@ def _task_source(tid: str) -> "str | None":
     return local_task_protocol.parse_task_headers_trusted(text).headers.get("source")
 
 
+# confinement was required but could not be resolved (e.g. task file missing):
+# unlike confine_root=None — the owner's plain-allowlist path — this fails closed.
+_CONFINE_UNRESOLVED = object()
+
+
 def _read_attachment(path_str: str, confine_root=None) -> "tuple[str, str, str]":
     """(basename, base64 bytes, "") for an allowlisted readable file, or
     ("", "", reason) — the refusals both upload routes report in-band."""
+    if confine_root is _CONFINE_UNRESOLVED:
+        return "", "", "task provenance unavailable"
     fpath = os.path.realpath(os.path.expanduser(path_str.strip()))
     if not is_path_sendable(fpath):
         return "", "", "path not allowlisted"
@@ -7297,9 +7304,12 @@ def _post_ready_results(inflight: set[str]) -> None:
             confine_root = None
             if task_media:
                 task_file = find_task_file(TASKS_DIR, tid) or find_archived_task(TASKS_DIR, tid)
-                tier = (team_result_guard.resolve_access_tier(task_file)
-                        if task_file is not None else "guest")
-                confine_root = _team_task_media_root(tid, tier)
+                if task_file is None:
+                    # No provenance to resolve confinement from — fail closed.
+                    confine_root = _CONFINE_UNRESOLVED
+                else:
+                    tier = team_result_guard.resolve_access_tier(task_file)
+                    confine_root = _team_task_media_root(tid, tier)
             room = _load_task_rooms().get(tid, "")
             sent = 0
             deferred = False
