@@ -221,7 +221,27 @@ _TWILIO_CALLER_LIMIT = 1000
 _TWILIO_CALLERS_LOCK = threading.Lock()
 
 
+def _write_twilio_callers(path: Path, records: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".twilio-callers.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(records, handle, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+
+
 def _twilio_caller_records(now: float) -> dict:
+    # Callers hold _TWILIO_CALLERS_LOCK. Expired/malformed rows are pruned back
+    # to disk so a caller number does not outlive its 24h retention on disk.
     path = WORKSPACE_DIR / "state" / "twilio-callers.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -229,7 +249,7 @@ def _twilio_caller_records(now: float) -> dict:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {
+    records = {
         call_sid: record
         for call_sid, record in raw.items()
         if isinstance(call_sid, str) and isinstance(record, dict)
@@ -237,6 +257,9 @@ def _twilio_caller_records(now: float) -> dict:
         and isinstance(record.get("expires_at"), (int, float))
         and record["expires_at"] > now
     }
+    if len(records) != len(raw):
+        _write_twilio_callers(path, records)
+    return records
 
 
 def _remember_twilio_caller(call_sid: str, caller: str) -> None:
@@ -249,21 +272,7 @@ def _remember_twilio_caller(call_sid: str, caller: str) -> None:
         records[call_sid] = {"caller": caller, "expires_at": now + _TWILIO_CALLER_TTL_SECONDS}
         records = dict(sorted(records.items(), key=lambda item: item[1]["expires_at"], reverse=True)
                        [: _TWILIO_CALLER_LIMIT])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_path = tempfile.mkstemp(prefix=".twilio-callers.", dir=path.parent)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(records, handle, separators=(",", ":"))
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-        finally:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
+        _write_twilio_callers(path, records)
 
 
 def _twilio_caller_for_call(call_sid: str) -> str:

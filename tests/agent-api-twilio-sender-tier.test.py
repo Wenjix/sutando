@@ -78,6 +78,14 @@ class TwilioSenderTierTests(unittest.TestCase):
         self.assertIn("access_tier: owner", voicemails[0])
         self.assertIn("access_tier: other", voicemails[1])
 
+    def test_expired_caller_record_is_pruned_from_disk_on_read(self):
+        path = api.WORKSPACE_DIR / "state" / "twilio-callers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"CA-old": {"caller": "+14155550000", "expires_at": 1}}')
+        with api._TWILIO_CALLERS_LOCK:
+            self.assertEqual(api._twilio_caller_records(time.time()), {})
+        self.assertNotIn("+14155550000", path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
