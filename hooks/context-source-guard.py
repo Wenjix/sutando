@@ -22,8 +22,8 @@ for unknown-serving-channel (interactive/diagnostic reads outside task processin
 Once a non-empty blacklist is confirmed, any subsequent error is fail-CLOSED — never
 let an exception bypass an active guard.
 
-Deploy: copy this file AND _shell_scan.py to ~/.claude/hooks/, then register under
-PreToolUse for BOTH the "Bash" and "Read" matchers in ~/.claude/settings.json.
+Deploy: copy this file and _shell_scan.py to the Claude hooks folder ($CLAUDE_CONFIG_DIR/hooks/),
+then register under PreToolUse for BOTH the "Bash" and "Read" matchers in settings.json.
 See hooks/README.md. Config paths are
 env-overridable (SUTANDO_DISCORD_ACCESS_FILE / SUTANDO_DISCORD_ENV_FILE) for testing.
 """
