@@ -10,6 +10,11 @@ import sys
 import tempfile
 
 REPO = Path(__file__).resolve().parents[1]
+os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="ccd-discord-sibling-skills-")
+_discord_config = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "channels" / "discord"
+_discord_config.mkdir(parents=True, exist_ok=True)
+(_discord_config / "access.json").write_text('{"allowFrom": []}', encoding="utf-8")
+(_discord_config / ".env").write_text("DISCORD_BOT_TOKEN=test-stub-token\n", encoding="utf-8")
 SOURCE = REPO / "src" / "discord-bridge.py"
 tree = ast.parse(SOURCE.read_text())
 loader_node = next(
