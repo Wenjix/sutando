@@ -125,9 +125,19 @@ describe('local API token parity', () => {
 			for (let attempt = 0; attempt < 300 && readdirSync(readyDir).length < 8; attempt++) {
 				await new Promise(resolve => setTimeout(resolve, 10));
 			}
-			assert.equal(readdirSync(readyDir).length, 8, 'all workers must reach the overlap barrier');
+			let tokens: string[] = [];
+			let failure: unknown;
+			try {
+				assert.equal(readdirSync(readyDir).length, 8, 'all workers must reach the overlap barrier');
+			} catch (error) {
+				failure = error;
+			}
 			writeFileSync(goFile, 'go');
-			const tokens = await Promise.all(workers);
+			tokens = await Promise.all(workers).catch(error => {
+				if (!failure) failure = error;
+				return [];
+			});
+			if (failure) throw failure;
 			assert.ok(tokens[0]);
 			assert.ok(tokens.every(token => token === tokens[0]));
 			assert.equal(readFileSync(tokenPath, 'utf8'), `${tokens[0]}\n`);
