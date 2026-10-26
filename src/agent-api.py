@@ -33,14 +33,12 @@ Twilio setup:
   The tunnel must also forward /twilio/transcription: handle_twilio_voice sets it
   as the voicemail transcribeCallback, so an allowlist without it records messages
   whose transcripts never arrive. Forward ONLY those three. A whole-port tunnel
-  publishes every endpoint above, and a proxy that connects from localhost defeats the
-  AGENT_API_BIND=127.0.0.1 default that is otherwise the only thing in front of
-  POST /task -- check_auth() returns True unconditionally when SUTANDO_API_TOKEN
-  is unset, which is the default.
+  publishes every endpoint above.
 
-Security: Set SUTANDO_API_TOKEN in .env for token auth (Authorization: Bearer <token>).
-Without it POST /task is unauthenticated and the bind is the sole protection, so
-set the token BEFORE exposing this port by any route.
+Without SUTANDO_API_TOKEN, POST /task, /tasks/active, /logs/voice and /media/
+accept the per-install bearer at <workspace>/state/agent-api.token or a loopback
+client with a loopback Host and absent or loopback Origin. /media/ excludes
+state/, tasks/, logs/, hosts/, dot-paths and unsupported extensions.
 For remote access: use ngrok or SSH tunnel.
 """
 
@@ -174,6 +172,34 @@ def _emit_task_processed(content: str) -> None:
 
 # Simple token auth — set SUTANDO_API_TOKEN in .env for remote access security
 API_TOKEN = os.environ.get("SUTANDO_API_TOKEN", "")
+SAFE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mp3": "audio/mpeg",
+    ".wav": "audio/wav", ".pdf": "application/pdf", ".json": "application/json",
+    ".txt": "text/plain", ".html": "text/html", ".css": "text/css",
+    ".js": "application/javascript",
+}
+_PRIVATE_MEDIA_DIRS = frozenset({"state", "tasks", "logs", "hosts"})
+
+
+def _media_file(rel: str) -> Optional[Path]:
+    safe_rel = re.sub(r"[^a-zA-Z0-9_./-]", "", rel)
+    if not safe_rel or safe_rel != rel or ".." in safe_rel or safe_rel.startswith("/") or "\x00" in safe_rel:
+        raise ValueError("invalid path")
+    components = [part for part in safe_rel.split("/") if part]
+    if not components:
+        raise ValueError("invalid path")
+    safe_parts = [Path(part).name for part in components]
+    if safe_parts[0].lower() in _PRIVATE_MEDIA_DIRS or any(part.startswith(".") for part in safe_parts):
+        return None
+    workspace = WORKSPACE_DIR.resolve()
+    media_path = workspace.joinpath(*safe_parts).resolve()
+    if not media_path.is_relative_to(workspace) or not media_path.is_file():
+        return None
+    if media_path.suffix.lower() not in SAFE_TYPES:
+        return None
+    return media_path
 
 # Connections over HTTP: the web client's transport to src/connections.py (docs/connections.md).
 # Every route, GET included, needs the local API bearer; the gate is local_api_gate's.
@@ -978,6 +1004,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
+    def _send_owner_origin_headers(self):
+        origin = self.headers.get("Origin", "")
+        if origin and local_api_gate.loopback_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
+    def send_owner_json(self, status: int, data: dict):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self._send_owner_origin_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
     def send_private_json(self, status: int, data: dict):
         """JSON for owner-history routes: no cross-origin read permission."""
         self.send_response(status)
@@ -993,6 +1033,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             configured_token=API_TOKEN)
         if status != 200:
             self.send_private_json(status, {"error": why})
+            return False
+        return True
+
+    def _bound_port(self) -> Optional[int]:
+        try:
+            return int(self.server.server_address[1])
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return None
+
+    def check_local_owner_auth(self, *, require_bearer=False, content_type=None, send=None) -> bool:
+        status, why = local_api_gate.local_owner_request_allowed(
+            self.client_address[0], self.headers.get("Origin"), self.headers.get("Host", ""),
+            self.headers.get("Authorization", ""), expected_token=connections_bearer(),
+            bound_port=self._bound_port(), require_bearer=require_bearer,
+            content_type=content_type)
+        if status != 200:
+            (send or self.send_owner_json)(status, {"error": why})
             return False
         return True
 
@@ -1054,13 +1111,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(body, dict):
                     self._send_connections(400, {"error": "body must be a JSON object"})
                     return
-        try:
-            bound_port = int(self.server.server_address[1])
-        except (AttributeError, TypeError, ValueError, IndexError):
-            bound_port = None
         status, why = local_api_gate.bearer_request_allowed(
             self.headers.get("Origin"), self.headers.get("Host", ""), self.headers.get("Authorization", ""),
-            expected_token=connections_bearer(), bound_port=bound_port)
+            expected_token=connections_bearer(), bound_port=self._bound_port())
         if why:
             self._send_connections(status, {"error": why})
             return
@@ -1148,6 +1201,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             self.send_json(200, _questions_queue_payload())
         elif path == "/tasks/active":
+            if not self.check_local_owner_auth():
+                return
             # List active tasks + system status for the web client
             watcher_pids, probe_ok = probe_pids("watch-tasks", timeout=3.0)
             watcher_ok = bool(watcher_pids) if probe_ok else None
@@ -1163,7 +1218,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ).returncode == 0
             except OSError:
                 claude_ok = False
-            self.send_json(200, _active_tasks_payload(watcher_ok, claude_ok))
+            self.send_owner_json(200, _active_tasks_payload(watcher_ok, claude_ok))
         elif path == "/delegation/results":
             # TaskDelegationService relay backend (#1947): list results/ for
             # the split-host watcher. Read-only but bearer-gated like the
@@ -1258,45 +1313,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.send_json(200, {})
         elif path.startswith("/media/"):
-            # Serve local files for dynamic region (images, audio, video, docs)
-            # Note: mimetypes import removed — replaced by SAFE_TYPES allowlist (CodeQL #19-23 mitigation)
+            if not self.check_local_owner_auth():
+                return
             rel = path[len("/media/"):]
-            # Sanitize: strip everything except safe filename characters (fixes CodeQL #20-21)
-            safe_rel = re.sub(r'[^a-zA-Z0-9_./-]', '', rel)
-            if not safe_rel or safe_rel != rel or '..' in safe_rel or safe_rel.startswith('/') or '\x00' in safe_rel:
-                self.send_json(400, {"error": "invalid path"})
+            try:
+                media_path = _media_file(rel)
+            except ValueError:
+                self.send_owner_json(400, {"error": "invalid path"})
                 return
-            # Decompose + rebuild via Path(...).name per component — breaks
-            # CodeQL's taint flow (Path.name is a recognized path-injection
-            # sanitizer). After the regex above, each split('/') component
-            # is already [a-zA-Z0-9_.-]+, so this is a functional no-op.
-            safe_parts = [Path(p).name for p in safe_rel.split('/') if p]
-            if not safe_parts:
-                self.send_json(400, {"error": "invalid path"})
+            if media_path is None:
+                self.send_owner_json(404, {"error": "not found"})
                 return
-            repo_resolved = WORKSPACE_DIR.resolve()  # /media/ serves from workspace (results/, data/, notes/)
-            media_path = repo_resolved.joinpath(*safe_parts).resolve()
-            if not media_path.is_relative_to(repo_resolved) or not media_path.is_file():
-                self.send_json(404, {"error": "not found"})
-                return
-            # Use a fixed allowlist of safe content types
-            SAFE_TYPES = {
-                '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
-                '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg',
-                '.wav': 'audio/wav', '.pdf': 'application/pdf', '.json': 'application/json',
-                '.txt': 'text/plain', '.html': 'text/html', '.css': 'text/css',
-                '.js': 'application/javascript',
-            }
-            ext = media_path.suffix.lower()
-            mime = SAFE_TYPES.get(ext, 'application/octet-stream')
             self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "public, max-age=300")
+            self.send_header("Content-Type", SAFE_TYPES[media_path.suffix.lower()])
+            self.send_header("Cache-Control", "private, no-store")
+            self._send_owner_origin_headers()
             self.end_headers()
             self.wfile.write(media_path.read_bytes())
         elif path == "/logs/voice":
+            if not self.check_local_owner_auth():
+                return
             # Return last 30 lines of voice-agent.log for debugging.
             # Canonical path is logs/voice-agent.log (see startup.sh:153,
             # health-check.py:288, check-pending-questions.py:24). The
@@ -1306,9 +1342,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log_file = WORKSPACE_DIR / "logs" / "voice-agent.log"
             if log_file.exists():
                 lines = log_file.read_text().splitlines()[-30:]
-                self.send_json(200, {"lines": lines})
+                self.send_owner_json(200, {"lines": lines})
             else:
-                self.send_json(404, {"error": "voice-agent.log not found"})
+                self.send_owner_json(404, {"error": "voice-agent.log not found"})
         elif path == "/":
             # Serve task submission form (works from phone on same Wi-Fi)
             self.send_response(200)
@@ -1679,7 +1715,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
             return
 
-        if not self.check_auth():
+        if not self.check_local_owner_auth(require_bearer=bool(API_TOKEN),
+                                           content_type=self.headers.get("Content-Type", ""),
+                                           send=self.send_json):
             return
 
         try:
