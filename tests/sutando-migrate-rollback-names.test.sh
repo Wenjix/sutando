@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Rollback cleanup keeps filename boundaries and never deletes outside the dest:
-# a surface name containing a newline must stay one name, not split into a path.
+# Rollback cleanup keeps filename boundaries and stays inside the dest.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
