@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
-import { isLoopback } from '../skills/phone-conversation/scripts/loopback_guard.js';
+import { isDirectLoopback, isLoopback } from '../skills/phone-conversation/scripts/loopback_guard.js';
 
 // Security-relevant regression guard for the loopback-only gate on the
 // phone-conversation server's control endpoints.
@@ -15,9 +15,9 @@ import { isLoopback } from '../skills/phone-conversation/scripts/loopback_guard.
 // could POST `/call` with an arbitrary phone number and originate a
 // Twilio call on the owner's account.
 
-function fakeReq(remoteAddress: string | undefined): IncomingMessage {
+function fakeReq(remoteAddress: string | undefined, headers: Record<string, string> = {}): IncomingMessage {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	return { socket: { remoteAddress } } as any;
+	return { socket: { remoteAddress }, headers } as any;
 }
 
 describe('loopback_guard.isLoopback', () => {
@@ -58,23 +58,39 @@ describe('loopback_guard.isLoopback', () => {
 	});
 });
 
+describe('loopback_guard.isDirectLoopback', () => {
+	it('accepts an unforwarded loopback request', () => {
+		assert.equal(isDirectLoopback(fakeReq('127.0.0.1')), true);
+	});
+	it('rejects loopback requests carrying x-forwarded-for', () => {
+		assert.equal(isDirectLoopback(fakeReq('127.0.0.1', { 'x-forwarded-for': '198.51.100.4' })), false);
+	});
+	it('rejects loopback requests carrying Forwarded or a Tailscale Funnel header', () => {
+		assert.equal(isDirectLoopback(fakeReq('::1', { forwarded: 'for=198.51.100.4' })), false);
+		assert.equal(isDirectLoopback(fakeReq('::1', { 'tailscale-funnel-request': '1' })), false);
+	});
+	it('rejects LAN requests', () => {
+		assert.equal(isDirectLoopback(fakeReq('192.168.1.42')), false);
+	});
+});
+
 describe('conversation-server.ts wiring', () => {
 	const SRC = readFileSync(
 		join(import.meta.dirname ?? '.', '..', 'skills/phone-conversation/scripts/conversation-server.ts'),
 		'utf-8',
 	);
 
-	it('imports isLoopback from the guard module', () => {
+	it('imports direct-loopback guards from the guard module', () => {
 		assert.match(SRC, /from\s+['"]\.\/loopback_guard(?:\.js)?['"]/, (
-			'conversation-server.ts must import isLoopback from ./loopback_guard'
+			'conversation-server.ts must import loopback guards from ./loopback_guard'
 		));
 	});
 
-	it('gates non-/twilio non-/health endpoints with isLoopback', () => {
+	it('gates non-/twilio non-/health endpoints with isDirectLoopback', () => {
 		assert.match(
 			SRC,
-			/path\s*!==\s*['"]\/health['"][\s\S]{0,80}!\s*path\.startsWith\(['"]\/twilio\/['"]\)[\s\S]{0,80}!isLoopback\(req\)/,
-			'conversation-server.ts must check `path !== "/health" && !path.startsWith("/twilio/") && !isLoopback(req)` before dispatching to control endpoints',
+			/path\s*!==\s*['"]\/health['"][\s\S]{0,100}!isTwilioPath[\s\S]{0,100}!isDirectLoopback\(req\)/,
+			'conversation-server.ts must check direct loopback before dispatching to control endpoints',
 		);
 	});
 
@@ -88,5 +104,6 @@ describe('conversation-server.ts wiring', () => {
 
 	it('logs the rejected remote address for incident triage', () => {
 		assert.match(SRC, /REJECTED non-loopback/);
+		assert.match(SRC, /REJECTED tunnel-forwarded/);
 	});
 });

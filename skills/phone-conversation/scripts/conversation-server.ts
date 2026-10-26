@@ -61,6 +61,10 @@ import { PLAYBACK_PATH } from '../../../src/tmp-paths.js';
 
 import { execSync, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { isAllowedAudioPath } from './audio_path_guard.js';
+import { CallRecordStore, classifyCall, normalizePhone } from './call_records.js';
+import { isDirectLoopback, isLoopback } from './loopback_guard.js';
+import { PlaybackOwner } from './playback_binding.js';
+import { isValidMediaStreamUpgrade, isValidTwilioSignature } from './twilio_request_auth.js';
 import { VoiceSession, type ToolDefinition, type MainAgent } from 'bodhi-realtime-agent';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -78,6 +82,7 @@ import { resultBelongsTo, phoneCallKey } from '../../../src/result-channel-key.j
 // phone-agent boot path free of the vision-tools.ts side-effects on cold start.
 let _setVisionSession: ((s: unknown) => void) | null = null;
 let _priorVisionSession: unknown = undefined; // snapshot to restore on hang-up
+let visionCallSid: string | null = null;
 async function attachVisionToCall(session: unknown): Promise<void> {
 	try {
 		if (!_setVisionSession) {
@@ -172,15 +177,6 @@ if (!existsSync(PHONE_VOICE_CONFIG_PATH)) {
 const PHONE_VOICE_CONFIG = loadVoiceConfig(PHONE_VOICE_CONFIG_PATH);
 const VOICE_NATIVE_AUDIO_MODEL = PHONE_VOICE_CONFIG.model;
 const PHONE_GOOGLE_SEARCH = PHONE_VOICE_CONFIG.googleSearch;
-
-/** Normalize phone number to digits only for comparison (strips +, -, spaces, parens) */
-function normalizePhone(num: string): string {
-	const digits = num.replace(/\D/g, '');
-	// If 10 digits (US without country code), prepend 1
-	return digits.length === 10 ? '1' + digits : digits;
-}
-
-
 
 const VERIFIED_CALLERS_RAW = (process.env.VERIFIED_CALLERS ?? '').split(',').map(s => s.trim()).filter(Boolean);
 const VERIFIED_CALLERS = new Set(VERIFIED_CALLERS_RAW.map(normalizePhone));
@@ -348,6 +344,8 @@ interface CallSession {
 
 const activeCalls = new Map<string, CallSession>();
 let activePlaybackProc: ChildProcess | null = null; // ffmpeg process for /play-audio streaming
+const callRecords = new CallRecordStore();
+const playbackOwner = new PlaybackOwner();
 const pendingMeetingJoins = new Set<string>(); // prevents duplicate near-simultaneous joins
 let nextBodhiPort = 9910; // Dynamic ports for per-call VoiceSessions
 
@@ -836,11 +834,10 @@ async function createCallSession(params: {
 
 	callSession.voiceSession = session;
 
-	// Route vision frames to this call's session for its duration. Push-mode
-	// senders (Mentra glasses, Discord/Telegram photo helper, the web Watch
-	// button) now reach the phone caller's session instead of the web
-	// session. Restored on hang-up (see endCall).
-	await attachVisionToCall(session);
+	if (callSession.isOwner) {
+		await attachVisionToCall(session);
+		visionCallSid = params.callSid;
+	}
 
 	// Start VoiceSession (creates ClientTransport WebSocket server on bodhiPort)
 	await session.start();
@@ -1024,13 +1021,17 @@ function cleanupCall(callSid: string): void {
 	import('../../../src/browser-tools.js').then(bt => bt.onCallEnd()).catch(() => {});
 	session.cleanupNarration?.();
 	try { if (session.channelScanHandle) clearInterval(session.channelScanHandle); } catch {}
+	if (playbackOwner.releaseCall(callSid) && activePlaybackProc) {
+		activePlaybackProc.kill('SIGTERM');
+		activePlaybackProc = null;
+	}
 	try { unlinkSync('/tmp/sutando-playback-pause'); } catch {}
 	try { unlinkSync(PLAYBACK_PATH); } catch {}
 
-	// Restore vision session to the prior (likely web) session before tearing
-	// down the call's VoiceSession so push-mode frames don't get sent to a
-	// closed transport.
-	detachVisionFromCall();
+	if (visionCallSid === callSid) {
+		detachVisionFromCall();
+		visionCallSid = null;
+	}
 
 	// Close VoiceSession
 	session.voiceSession.close('call_ended').catch(e =>
@@ -1348,44 +1349,50 @@ async function waitForWebhook(): Promise<void> {
 // and a WebSocket endpoint for real-time audio streaming (Media Streams).
 // Claude also calls these endpoints to trigger actions (/call, /concurrent-call, /hangup).
 
-// Control endpoints (anything not under /twilio/*) drive owner-account
-// actions: originate outbound calls (/call), hang up active calls
-// (/hangup), play audio through Twilio (/play-audio), etc. The server
-// binds to 0.0.0.0 because ngrok's local-tunnel client + the Twilio
-// webhook path need it (see server.listen at the bottom). That means
-// every endpoint is LAN-reachable. /twilio/* paths validate Twilio's
-// signature; the rest had no auth at all — any caller on the LAN could
-// POST /call with an arbitrary `to` and trigger Twilio calls on the
-// owner's account (cost + caller-ID exposure + harassment vector).
-// `isLoopback` (see loopback_guard.ts) gates non-/twilio control
-// endpoints to loopback only; LAN callers get 403. /health is exempt
-// — it's read-only and useful for LAN-side liveness checks.
-import { isLoopback } from './loopback_guard.js';
+// Control endpoints require direct loopback; Twilio routes validate signatures.
+// /health remains exempt for read-only liveness checks.
 
 const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? '', `http://localhost:${PORT}`);
 	const path = url.pathname;
-
-	if (req.method === 'OPTIONS') {
-		res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
-		res.end(); return;
-	}
-
-	// Reject non-Twilio endpoints from non-loopback callers (see comment
-	// on `isLoopback` above).
-	if (path !== '/health' && !path.startsWith('/twilio/') && !isLoopback(req)) {
-		const remote = req.socket.remoteAddress ?? '?';
-		console.log(`${ts()} [PhoneServer] REJECTED non-loopback ${req.method} ${path} from ${remote}`);
-		json(res, 403, { error: 'control endpoints are loopback-only' });
-		return;
-	}
-
-	if (isDrainBlocked(path, req.method, draining)) {
-		json(res, 503, { error: 'draining: the server is shutting down after its live calls end', activeCalls: activeCalls.size });
-		return;
-	}
-
 	try {
+		const isTwilioPath = path.startsWith('/twilio/');
+		const twilioBody = isTwilioPath ? await readBody(req) : '';
+
+		if (isTwilioPath && !isValidTwilioSignature(
+			TWILIO_AUTH_TOKEN,
+			req.headers['x-twilio-signature'] as string | undefined,
+			WEBHOOK_BASE_URL + (req.url ?? ''),
+			new URLSearchParams(twilioBody),
+		)) {
+			const remote = req.socket.remoteAddress ?? '?';
+			console.log(`${ts()} [Security] REJECTED unsigned Twilio webhook ${path} from ${remote}`);
+			json(res, 403, { error: 'invalid Twilio signature' });
+			return;
+		}
+
+		if (path !== '/health' && !isTwilioPath && !isDirectLoopback(req)) {
+			const remote = req.socket.remoteAddress ?? '?';
+			if (isLoopback(req)) {
+				console.log(`${ts()} [PhoneServer] REJECTED tunnel-forwarded ${req.method} ${path} from ${remote}`);
+				json(res, 403, { error: 'control endpoints refuse tunnel-forwarded requests' });
+			} else {
+				console.log(`${ts()} [PhoneServer] REJECTED non-loopback ${req.method} ${path} from ${remote}`);
+				json(res, 403, { error: 'control endpoints are loopback-only' });
+			}
+			return;
+		}
+
+		if (req.method === 'OPTIONS') {
+			res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
+			res.end(); return;
+		}
+
+		if (isDrainBlocked(path, req.method, draining)) {
+			json(res, 503, { error: 'draining: the server is shutting down after its live calls end', activeCalls: activeCalls.size });
+			return;
+		}
+
 		if (path === '/health' && req.method === 'GET') {
 			json(res, 200, { ...healthPayload({ activeCalls: activeCalls.size, webhookUrl: WEBHOOK_BASE_URL, startedAt: STARTED_AT, bundlePath: process.argv[1] ?? '' }), draining });
 
@@ -1512,6 +1519,7 @@ const server = createServer(async (req, res) => {
 				for (const [, s] of activeCalls) { if (s.isOwner) { session = s; break; } }
 			}
 			if (!session) { json(res, 404, { error: 'no active call' }); return; }
+			playbackOwner.bind(session.callSid, body.path);
 			// Kill any existing playback ffmpeg before starting a new one
 			if (activePlaybackProc) { activePlaybackProc.kill('SIGTERM'); activePlaybackProc = null; }
 			// Seek to position for synced resume after pause
@@ -1656,21 +1664,33 @@ const server = createServer(async (req, res) => {
 			twimlResponse(res, twiml);
 
 		} else if (path === '/twilio/connect' && req.method === 'POST') {
-			const body = await readBody(req);
-			const form = new URLSearchParams(body);
+			const form = new URLSearchParams(twilioBody);
 			const purpose = url.searchParams.get('purpose') ?? '';
 			const isMeeting = url.searchParams.get('meeting') === 'true';
 			const meetingId = url.searchParams.get('meetingId') ?? '';
 			const parentCallSid = url.searchParams.get('parentCallSid') ?? '';
 			const toParam = url.searchParams.get('to') ?? '';
+			const passcodeParam = url.searchParams.get('passcode') ?? '';
+			const callSid = form.get('CallSid') ?? '';
 			const callerNumber = form.get('From') ?? '';
 			const stirVerstat = form.get('StirVerstat') ?? '';
-			console.log(`${ts()} [Connect] purpose=${purpose} from=${callerNumber} stirVerstat=${stirVerstat} callSid=${form.get('CallSid') ?? '?'}`);
+			if (!callSid) { json(res, 400, { error: 'CallSid required' }); return; }
+			callRecords.put({
+				callSid,
+				callerNumber,
+				recipientNumber: toParam,
+				stirVerstat,
+				purpose,
+				isMeeting,
+				meetingId,
+				passcode: passcodeParam,
+				parentCallSid,
+			});
+			console.log(`${ts()} [Connect] purpose=${purpose} from=${callerNumber} stirVerstat=${stirVerstat} callSid=${callSid}`);
 
 			const params = [`<Parameter name="purpose" value="${esc(purpose)}" />`];
 			if (callerNumber) params.push(`<Parameter name="callerNumber" value="${esc(callerNumber)}" />`);
 			if (stirVerstat) params.push(`<Parameter name="stirVerstat" value="${esc(stirVerstat)}" />`);
-			const passcodeParam = url.searchParams.get('passcode') ?? '';
 			if (isMeeting) {
 				params.push(`<Parameter name="isMeeting" value="true" />`);
 				params.push(`<Parameter name="meetingId" value="${esc(meetingId)}" />`);
@@ -1689,7 +1709,7 @@ const server = createServer(async (req, res) => {
 </Response>`);
 
 		} else if (path === '/twilio/status' && req.method === 'POST') {
-			const form = new URLSearchParams(await readBody(req));
+			const form = new URLSearchParams(twilioBody);
 			const sid = form.get('CallSid') ?? '';
 			const status = form.get('CallStatus') ?? '';
 			console.log(`${ts()} [Status] ${sid} → ${status}`);
@@ -1709,7 +1729,18 @@ const server = createServer(async (req, res) => {
 // [Inbound audio chain entry point] Twilio connects here when a call starts.
 // Each connection: parse stream events → create VoiceSession → bridge audio.
 
-const wss = new WebSocketServer({ server, path: '/media-stream' });
+const wss = new WebSocketServer({
+	server,
+	path: '/media-stream',
+	verifyClient: (info: { origin: string; secure: boolean; req: IncomingMessage }) => {
+		const valid = isValidMediaStreamUpgrade(TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL);
+		if (!valid) {
+			const remote = info.req.socket.remoteAddress ?? '?';
+			console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`);
+		}
+		return valid;
+	},
+});
 
 wss.on('connection', (ws: WebSocket) => {
 	console.log(`${ts()} [WS] Twilio Media Stream connected`);
@@ -1728,48 +1759,27 @@ wss.on('connection', (ws: WebSocket) => {
 					break;
 
 				case 'start': {
+					if (callSid) break;
+					const rec = callRecords.claim(msg.start.callSid);
+					if (!rec) {
+						console.log(`${ts()} [Security] REJECTED media stream for unknown call ${msg.start.callSid}`);
+						ws.close(1008, 'unknown call');
+						break;
+					}
 					// Reset recording state from previous call (demoState may be stuck at 'done' or 'recording')
 					try { const { resetDemoState } = await import('../../../src/browser-tools.js'); resetDemoState(); } catch {}
-					callSid = msg.start.callSid;
+					callSid = rec.callSid;
 					const streamSid = msg.start.streamSid;
 					const cp = msg.start.customParameters ?? {};
 					console.log(`${ts()} [WS] customParameters: ${JSON.stringify(cp)}`);
-					const recipientNumber = cp.to ?? '';
-					const callerNumber = cp.callerNumber ?? cp.From ?? '';
-					const personOnLine = recipientNumber || callerNumber;
-					const isMeeting = cp.isMeeting === 'true';
-					const meetingId = cp.meetingId ?? '';
-
-					// Access control: verified callers get OS access (task delegation).
-					// Child calls inherit parent's verification (the parent authorized this call).
-					// For meetings: check meeting ID against VERIFIED_MEETINGS.
-					// Accepts original ID (e.g. "gbn-otgn-dex"), numeric PIN, or Zoom meeting ID.
-					const stirVerstat = cp.stirVerstat ?? '';
-					let callerVerified: boolean;
-					if (isMeeting) {
-						// Meetings must be explicitly verified — no permissive default.
-						// Unverified meetings get notes-only mode (no work tool / task delegation).
-						const numericId = meetingId.replace(/\D/g, '');
-						callerVerified = VERIFIED_MEETINGS.has(meetingId) || (numericId !== meetingId && VERIFIED_MEETINGS.has(numericId));
-					} else {
-						const normalizedPerson = normalizePhone(personOnLine);
-						callerVerified = VERIFIED_CALLERS.size === 0 || VERIFIED_CALLERS.has(normalizedPerson);
-					}
-
-					// Owner detection: number match + STIR/SHAKEN verification.
-					const ownerNumbers = OWNER_NUMBER ? OWNER_NUMBER.split(',').map(n => normalizePhone(n.trim())) : [];
-					const numberMatchesOwner = ownerNumbers.length > 0 && ownerNumbers.includes(normalizePhone(personOnLine));
-					const isOutbound = !!recipientNumber; // we initiated the call — trust the recipient number
-					let isOwner: boolean;
-					if (isOutbound && numberMatchesOwner) {
-						// Outbound call to owner — we initiated it, skip STIR/SHAKEN check
-						isOwner = true;
-					} else if (numberMatchesOwner && stirVerstat && stirVerstat !== 'TN-Validation-Passed-A') {
-						// Inbound: number matches but caller ID not cryptographically verified — possible spoof
-						isOwner = false;
+					const { callerNumber, recipientNumber, stirVerstat, isMeeting, meetingId } = rec;
+					const { personOnLine, callerVerified, isOwner, ownerDowngraded } = classifyCall(rec, {
+						ownerNumber: OWNER_NUMBER,
+						verifiedCallers: VERIFIED_CALLERS,
+						verifiedMeetings: VERIFIED_MEETINGS,
+					});
+					if (ownerDowngraded) {
 						console.log(`${ts()} [Security] Owner number matched but StirVerstat=${stirVerstat} (not A-level) — downgrading to verified`);
-					} else {
-						isOwner = numberMatchesOwner || (!OWNER_NUMBER && callerVerified);
 					}
 
 					console.log(`${ts()} [WS] stream started: ${callSid}, meeting: ${isMeeting}, verified: ${callerVerified}, owner: ${isOwner}, stirVerstat: ${stirVerstat}, personOnLine: ${personOnLine}, normalized: ${normalizePhone(personOnLine)}, verifiedSet: ${[...VERIFIED_CALLERS].join(',')}`);
@@ -1778,21 +1788,21 @@ wss.on('connection', (ws: WebSocket) => {
 						callSession = await createCallSession({
 							callSid,
 							streamSid,
-							purpose: cp.purpose ?? '',
+							purpose: rec.purpose,
 							twilioWs: ws,
 							callerNumber: recipientNumber || callerNumber,
 							callerVerified,
 							isOwner,
 							isMeeting,
 							meetingId: meetingId ? meetingId.replace(/\D/g, '') : undefined,
-							passcode: cp.passcode || undefined,
-							parentCallSid: cp.parentCallSid || undefined,
+							passcode: rec.passcode || undefined,
+							parentCallSid: rec.parentCallSid || undefined,
 						});
 						activeCalls.set(callSid, callSession);
 
 						// Notify parent if child call
-						if (cp.parentCallSid) {
-							const parent = activeCalls.get(cp.parentCallSid);
+						if (rec.parentCallSid) {
+							const parent = activeCalls.get(rec.parentCallSid);
 							if (parent) {
 								try {
 									(parent.voiceSession as any).transport.sendContent([
@@ -1834,6 +1844,10 @@ wss.on('connection', (ws: WebSocket) => {
 					const digit = msg.dtmf?.digit || msg.digit;
 					console.log(`${ts()} [DTMF] received: ${digit}`);
 					if (digit === '#' && callSession) {
+						if (!playbackOwner.controlledBy(callSession.callSid)) {
+							console.log(`${ts()} [DTMF] # ignored: playback belongs to another call`);
+							break;
+						}
 						// Toggle playback pause/resume
 						if (activePlaybackProc) {
 							// Currently playing → pause
@@ -1844,8 +1858,8 @@ wss.on('connection', (ws: WebSocket) => {
 							// Currently paused → resume
 							unlinkSync('/tmp/sutando-playback-pause');
 							// Re-stream audio from current QuickTime position
-							const recPath = (() => { try { const files = execSync('ls -t /tmp/sutando-recording-*.mov 2>/dev/null | grep -v narrated | head -1', { timeout: 3_000 }).toString().trim(); if (files) { const n = files.replace('.mov', '-narrated.mov'); return existsSync(n) ? n : files; } } catch {} return null; })();
-							if (recPath) {
+							const recPath = playbackOwner.current()?.path;
+							if (recPath && existsSync(recPath)) {
 								// Get QuickTime current position for sync
 								let seekSec = 0;
 								try {
