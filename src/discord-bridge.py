@@ -162,6 +162,7 @@ import mention_gate  # noqa: E402  — owner @-mention ingestion gate (skills/me
 import policy.context.discord as discord_context_policy  # noqa: E402
 from policy.guardrail import engage_rulebook, DISCORD_PROVENANCE  # noqa: E402
 from policy.egress.result import guard_result_for_tier, resolve_route_tier  # noqa: E402
+from channels.discord.client import validator_refusal  # noqa: E402
 
 from delivery.readiness import read_ready_result  # noqa: E402
 from result_publish import publish_text  # noqa: E402
@@ -2850,6 +2851,31 @@ _NOT_ALLOWLISTED_ACK_TEXT = (
     "👋 I got your message, but you're not on this Sutando's allowlist yet, so I "
     "can't act on it. Ask the owner to add you. _(automated notice)_"
 )
+_GATEWAY_POST_VALIDATOR_UNSET = object()
+_GATEWAY_POST_VALIDATOR = _GATEWAY_POST_VALIDATOR_UNSET
+
+
+def _gateway_post_refusal(channel_id, payload) -> str | None:
+    global _GATEWAY_POST_VALIDATOR
+    if _GATEWAY_POST_VALIDATOR is _GATEWAY_POST_VALIDATOR_UNSET:
+        try:
+            from channels.discord.post_gate import resolve_validator
+            _GATEWAY_POST_VALIDATOR = resolve_validator()
+        except Exception as e:
+            return (f"validator resolution failed ({type(e).__name__}: {e}) — "
+                    "refusing the unvalidated send")
+    return validator_refusal(_GATEWAY_POST_VALIDATOR, channel_id, payload)
+
+
+def _not_allowlisted_ack_payload(reference=None) -> dict:
+    payload = {"content": _NOT_ALLOWLISTED_ACK_TEXT}
+    if reference is not None:
+        payload["message_reference"] = {
+            "message_id": str(reference.message_id),
+            "channel_id": str(reference.channel_id),
+            "fail_if_not_exists": False,
+        }
+    return payload
 
 
 def _not_allowlisted_ack_lock() -> asyncio.Lock:
@@ -2940,6 +2966,11 @@ async def _ack_not_allowlisted(
                 if message is not None
                 else None
             )
+            refusal = _gateway_post_refusal(
+                channel_id, _not_allowlisted_ack_payload(ref))
+            if refusal is not None:
+                print(f"  [not-allowlisted-ack] refused by post-gate: {refusal}", flush=True)
+                return
             try:
                 await channel.send(_NOT_ALLOWLISTED_ACK_TEXT, reference=ref)
             except Exception as e:
@@ -2953,6 +2984,11 @@ async def _ack_not_allowlisted(
                     "retrying without reference",
                     flush=True,
                 )
+                refusal = _gateway_post_refusal(
+                    channel_id, _not_allowlisted_ack_payload())
+                if refusal is not None:
+                    print(f"  [not-allowlisted-ack] retry refused by post-gate: {refusal}", flush=True)
+                    return
                 await channel.send(_NOT_ALLOWLISTED_ACK_TEXT)
             _not_allowlisted_ack_at[cooldown_key] = now
             persisted[cooldown_key] = now

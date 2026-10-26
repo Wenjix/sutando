@@ -114,6 +114,50 @@ def test_discord():
     db._NOT_ALLOWLISTED_ACK_STATE_FILE = db.ACCESS_FILE.parent / "ack-state.json"
     db.STATE_DIR = db.ACCESS_FILE.parent
     db._not_allowlisted_ack_at.clear()
+
+    import channels.discord.post_gate as dpg
+    original_resolve_validator = dpg.resolve_validator
+    resolve_calls = []
+    dpg.resolve_validator = lambda: resolve_calls.append(True) and None
+    db._GATEWAY_POST_VALIDATOR = db._GATEWAY_POST_VALIDATOR_UNSET
+    try:
+        check("discord: gateway post validator allows an unconfigured policy",
+              db._gateway_post_refusal("123", {}) is None)
+        check("discord: unconfigured gateway validator is cached",
+              db._gateway_post_refusal("123", {}) is None and len(resolve_calls) == 1)
+    finally:
+        dpg.resolve_validator = original_resolve_validator
+
+    def reset_post_gate(validator):
+        db._GATEWAY_POST_VALIDATOR = validator
+        db._not_allowlisted_ack_at.clear()
+        db._NOT_ALLOWLISTED_ACK_STATE_FILE.unlink(missing_ok=True)
+
+    reset_post_gate(lambda channel_id, payload: "policy refusal")
+    refused = _FakeChannel(channel_id=222)
+    asyncio.run(db._ack_not_allowlisted(refused, "U_REFUSED", "refused"))
+    check(
+        "discord: refusing post gate prevents acknowledgement and cooldown",
+        not refused.sent
+        and "222:U_REFUSED" not in db._not_allowlisted_ack_at
+        and "222:U_REFUSED" not in db._not_allowlisted_ack_state(),
+        str(refused.sent),
+    )
+
+    reset_post_gate(lambda channel_id, payload: None)
+    allowed = _FakeChannel(channel_id=223)
+    asyncio.run(db._ack_not_allowlisted(allowed, "U_ALLOWED", "allowed"))
+    check("discord: allowing post gate sends one acknowledgement",
+          len(allowed.sent) == 1)
+
+    reset_post_gate(
+        lambda channel_id, payload: (_ for _ in ()).throw(RuntimeError("policy unavailable")))
+    crashed = _FakeChannel(channel_id=224)
+    asyncio.run(db._ack_not_allowlisted(crashed, "U_CRASHED", "crashed"))
+    check("discord: validator exception prevents acknowledgement",
+          not crashed.sent and "224:U_CRASHED" not in db._not_allowlisted_ack_at)
+
+    reset_post_gate(None)
     ch = _FakeChannel()
     asyncio.run(db._ack_not_allowlisted(ch, "U_A", "alice"))
     check("discord: addressed non-allowlisted sender gets one ack", len(ch.sent) == 1, str(ch.sent))
@@ -332,6 +376,27 @@ def test_discord():
         and fallback.references[0] is not None
         and fallback.references[1] is None,
         f"sent={fallback.sent!r} refs={fallback.references!r}",
+    )
+
+    reset_post_gate(
+        lambda channel_id, payload: None if "message_reference" in payload
+        else "retry does not pass policy")
+    denied_retry = _RejectedAnchorChan()
+    denied_retry.id = 890
+    denied_retry_message = _FakeMsg(
+        _FakeUser("U_RETRY_REFUSED"), denied_retry, "hi")
+    db.discord.HTTPException = _FakeHTTPException
+    try:
+        asyncio.run(db._ack_not_allowlisted(
+            denied_retry, "U_RETRY_REFUSED", "retry-refused", denied_retry_message
+        ))
+    finally:
+        db.discord.HTTPException = original_http_exception
+    check(
+        "discord: post gate prevents no-reference retry",
+        not denied_retry.sent and len(denied_retry.references) == 1
+        and "890:U_RETRY_REFUSED" not in db._not_allowlisted_ack_at,
+        f"sent={denied_retry.sent!r} refs={denied_retry.references!r}",
     )
 
 
