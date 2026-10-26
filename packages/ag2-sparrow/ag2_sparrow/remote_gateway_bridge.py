@@ -1459,6 +1459,17 @@ def _is_redelivery_control(body: str) -> bool:
 DELIVERY_SKIP_AFTER_CHANNEL = True
 
 
+def _team_task_media_root(tid: str, tier) -> "str | None":
+    if tier != "team":
+        return None
+    delivery = _delivery_tid(tid)
+    media_modes = _load_task_media() if delivery is not None else None
+    if (media_modes is not None
+            and (media_modes.get(_broker_tid(delivery)) or {}).get("mode") == "task-media"):
+        return str(RESULTS_DIR / delivery)
+    return None
+
+
 def _guarded_result_body(tid: str, body: str):
     """Scan a non-owner result BEFORE any marker is interpreted.
 
@@ -1495,16 +1506,8 @@ def _guarded_result_body(tid: str, body: str):
                 "source_message_id", "user_id")}
         except OSError:
             pass
-    # 5G ⑤a-cap: a TEAM task whose sidecar says task-media may attach from the DELIVERY
-    # task's `<results>/<id>/` (a dedup requeue carries the original's instruction).
-    attach_roots: tuple = ()
-    if tier == "team":
-        _delivery_for_media = _delivery_tid(tid)
-        _media_modes = _load_task_media() if _delivery_for_media is not None else None
-        if (_media_modes is not None
-                and (_media_modes.get(_broker_tid(_delivery_for_media)) or {}).get("mode")
-                == "task-media"):
-            attach_roots = (str(RESULTS_DIR / _delivery_for_media),)
+    root = _team_task_media_root(tid, tier)
+    attach_roots = (root,) if root else ()
     verdict = classify(
         body, tier, None, secret_filter=filter_chat_secrets,
         scan_sensitive_data=scan_sensitive_data, attach_roots=attach_roots)
@@ -5330,12 +5333,26 @@ def _task_source(tid: str) -> "str | None":
     return local_task_protocol.parse_task_headers_trusted(text).headers.get("source")
 
 
-def _read_attachment(path_str: str) -> "tuple[str, str, str]":
+def _read_attachment(path_str: str, confine_root=None) -> "tuple[str, str, str]":
     """(basename, base64 bytes, "") for an allowlisted readable file, or
     ("", "", reason) — the refusals both upload routes report in-band."""
     fpath = os.path.realpath(os.path.expanduser(path_str.strip()))
     if not is_path_sendable(fpath):
         return "", "", "path not allowlisted"
+    if confine_root is not None:
+        confined_path = os.path.abspath(os.path.expanduser(path_str.strip()))
+        try:
+            fd = team_result_guard.open_confined_attachment(confined_path, confine_root)
+        except (OSError, ValueError):
+            return "", "", "outside the task's media directory"
+        try:
+            with os.fdopen(fd, "rb") as f:
+                if os.fstat(f.fileno()).st_size > MAX_MEDIA_BYTES:
+                    return "", "", f"file exceeds {MAX_MEDIA_BYTES} bytes"
+                return (os.path.basename(confined_path),
+                        base64.b64encode(f.read()).decode("ascii"), "")
+        except OSError as e:
+            return "", "", f"read failed: {e}"
     try:
         size = os.path.getsize(fpath)
     except OSError as e:
@@ -5366,7 +5383,8 @@ def _upload_attachment(room: str, path_str: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _upload_task_attachment(wire_id: str, ordinal: int, path_str: str) -> "tuple[str, str]":
+def _upload_task_attachment(wire_id: str, ordinal: int, path_str: str,
+                            confine_root=None) -> "tuple[str, str]":
     """Upload one attachment against a Signal task's own lease. Returns
     ("ok"|"note"|"defer", reason).
 
@@ -5374,7 +5392,7 @@ def _upload_task_attachment(wire_id: str, ordinal: int, path_str: str) -> "tuple
     an in-band note: the retry has to re-offer the same wire id, ordinal and
     bytes for the relay to resume the upload it may already have recorded.
     """
-    name, content_b64, reason = _read_attachment(path_str)
+    name, content_b64, reason = _read_attachment(path_str, confine_root)
     if reason:
         return "note", reason
     safe_tid = urllib.parse.quote(wire_id, safe="")
@@ -7276,6 +7294,12 @@ def _post_ready_results(inflight: set[str]) -> None:
                 _log(f"delivery deferred for {tid} — media sidecar unreadable")
                 continue
             task_media = (_media.get(_wire) or {}).get("mode") == "task-media"
+            confine_root = None
+            if task_media:
+                task_file = find_task_file(TASKS_DIR, tid) or find_archived_task(TASKS_DIR, tid)
+                tier = (team_result_guard.resolve_access_tier(task_file)
+                        if task_file is not None else "guest")
+                confine_root = _team_task_media_root(tid, tier)
             room = _load_task_rooms().get(tid, "")
             sent = 0
             deferred = False
@@ -7286,7 +7310,8 @@ def _post_ready_results(inflight: set[str]) -> None:
                     sent += 1
                     continue
                 if task_media:
-                    status, reason = _upload_task_attachment(_wire, ordinal, fp)
+                    status, reason = _upload_task_attachment(
+                        _wire, ordinal, fp, confine_root=confine_root)
                 else:
                     ok, reason = (_upload_attachment(room, fp) if room
                                   else (False, "origin room unknown"))

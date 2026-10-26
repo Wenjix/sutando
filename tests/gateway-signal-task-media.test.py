@@ -150,6 +150,44 @@ class TaskMediaRoute(unittest.TestCase):
         self.assertEqual(media[0][2]["filename"], "chart.png")
         self.assertTrue(self._result_posts(), "and the result itself is delivered")
 
+    def test_team_task_directory_swap_is_refused_before_upload(self):
+        mod = self.mod
+        mod.LOCAL_TIER = "team"
+        mod._load_tier_map = lambda: {}
+        self._allow_this_workspace_results(mod)
+        mod._write_task(self._team_signal_task("task-team-swap"))
+        task_dir = mod.RESULTS_DIR / "task-team-swap"
+        other_dir = mod.RESULTS_DIR / "task-team-other"
+        task_dir.mkdir()
+        other_dir.mkdir()
+        (task_dir / "chart.png").write_bytes(b"approved")
+        (other_dir / "chart.png").write_bytes(b"other task bytes")
+        attachment = task_dir / "chart.png"
+        self._result(mod, "task-team-swap", f"the chart [file: {attachment}]")
+        backup = mod.RESULTS_DIR / "task-team-swap-backup"
+        upload = mod._upload_task_attachment
+
+        def swap_then_upload(wire_id, ordinal, path, confine_root=None):
+            task_dir.rename(backup)
+            task_dir.symlink_to(other_dir, target_is_directory=True)
+            try:
+                if confine_root is None:
+                    return upload(wire_id, ordinal, path)
+                return upload(wire_id, ordinal, path, confine_root=confine_root)
+            finally:
+                task_dir.unlink()
+                backup.rename(task_dir)
+
+        with patch.object(mod, "_upload_task_attachment", side_effect=swap_then_upload):
+            mod._post_ready_results({"task-team-swap"})
+        self.assertEqual(self._media_posts(), [],
+                         "a replacement task directory never supplies upload bytes")
+        results = self._result_posts()
+        self.assertEqual(len(results), 1)
+        body = results[0][2]["body"]
+        self.assertIn("[attachment not sent:", body)
+        self.assertIn("outside the task's media directory", body)
+
     def test_ordinary_team_task_gets_no_allowance(self):
         mod = self.mod
         mod.LOCAL_TIER = "team"

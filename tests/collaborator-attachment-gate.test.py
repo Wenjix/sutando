@@ -225,6 +225,40 @@ class TaskScopedAttachRoots(unittest.TestCase):
         out, _ = self._guard(f"x [file: {link}]", "ts4")
         self.assertEqual(out, guard.TEAM_LEAK_RESULT_MARKER)
 
+    def test_symlinked_attach_root_is_untrusted(self):
+        root = self.results / "task-a"
+        target = self.results / "task-b"
+        target.mkdir()
+        (target / "secret.png").write_bytes(b"secret")
+        os.symlink(self.results, root, target_is_directory=True)
+        body = f"[file: {root / 'task-b' / 'secret.png'}]"
+        self.assertFalse(guard.attach_markers_confined(body, (str(root),)))
+        out, _ = guard.guard_result_for_tier(
+            body, "team", REPO, suppress_journal=(self.sd, "symlink-root"),
+            attach_roots=(str(root),))
+        self.assertEqual(out, guard.TEAM_LEAK_RESULT_MARKER)
+
+    def test_confined_open_reads_regular_files_and_rejects_symlinks(self):
+        root = self.results / "confined"
+        root.mkdir()
+        real = root / "real.png"
+        real.write_bytes(b"image")
+        fd = guard.open_confined_attachment(str(real), str(root))
+        try:
+            self.assertEqual(os.read(fd, 16), b"image")
+        finally:
+            os.close(fd)
+
+        outside = self.results / "outside.png"
+        outside.write_bytes(b"secret")
+        final_link = root / "final-link.png"
+        os.symlink(outside, final_link)
+        link_dir = root / "link-dir"
+        os.symlink(self.results, link_dir, target_is_directory=True)
+        for path in (final_link, link_dir / "outside.png"):
+            with self.subTest(path=path), self.assertRaises(OSError):
+                guard.open_confined_attachment(str(path), str(root))
+
     def test_relative_marker_is_not_confined(self):
         out, _ = self._guard("x [file: task-signal-1/chart.png]", "ts5")
         self.assertEqual(out, guard.TEAM_LEAK_RESULT_MARKER)
