@@ -159,6 +159,7 @@ def _is_discord_channel_id(value: str) -> bool:
     return value.isdigit() and 17 <= len(value) <= 20
 from result_markers import parse_markers, has_skip_action  # noqa: E402
 import mention_gate  # noqa: E402  — owner @-mention ingestion gate (skills/mention-gate)
+import policy.context.discord as discord_context_policy  # noqa: E402
 from policy.guardrail import engage_rulebook, DISCORD_PROVENANCE  # noqa: E402
 from policy.egress.result import guard_result_for_tier, resolve_route_tier  # noqa: E402
 
@@ -1007,20 +1008,8 @@ def load_channel_allowed(channel_id):
     return cfg[1]
 
 def load_channel_context_blacklist(channel_id):
-    """Context-source BLACKLIST: ids this channel must NOT pull context from, via
-    `contextNotFrom` in access.json (mirrors allowFrom's per-channel shape). Same axis-style as
-    allowFrom (who may send) but for INFORMATION FLOW (which channels' content may be pulled into
-    a reply here). Entries may be CHANNEL ids or GUILD ids (a guild id blocks every channel in
-    that guild). Returns a set of id strings (empty if unconfigured). Used to gate the
-    Discord-state prefetch so e.g. #dev can be barred from pulling a private guild's content."""
-    try:
-        data = json.loads(ACCESS_FILE.read_text())
-        grp = data.get("groups", {}).get(str(channel_id))
-        if isinstance(grp, dict):
-            return {str(c) for c in (grp.get("contextNotFrom") or [])}
-    except Exception:
-        pass
-    return set()
+    return discord_context_policy.load_channel_context_blacklist(
+        channel_id, access_file=ACCESS_FILE)
 
 def _should_notify_owner_on_seed(sender_id, owner_ids):
     """True iff a thread auto-seed should @-mention the owner.
@@ -1609,14 +1598,20 @@ async def _prefetch_discord_state_refs(user_task_text, origin_channel_id=None):
     blocks = []
     for ref in ordered_refs:
         if _ctx_blacklist:
+            if str(ref) in _ctx_blacklist:
+                print(f"  [discord-state-prefetch] ref <#{ref}> blocked by contextNotFrom for channel {origin_channel_id} — skipping", flush=True)
+                continue
             _ref_guild = ""
             try:
                 _rc = client.get_channel(int(ref)) or await asyncio.wait_for(
                     client.fetch_channel(int(ref)), timeout=_PREFETCH_PER_REF_TIMEOUT_S)
+                if _rc is None:
+                    raise RuntimeError("channel lookup returned no channel")
                 _ref_guild = str(getattr(getattr(_rc, "guild", None), "id", "") or "")
-            except Exception:
-                _ref_guild = ""
-            if str(ref) in _ctx_blacklist or (_ref_guild and _ref_guild in _ctx_blacklist):
+            except Exception as e:
+                print(f"  [discord-state-prefetch] ref <#{ref}> could not be resolved while contextNotFrom is active: {e}; failing whole prefetch", flush=True)
+                return None
+            if _ref_guild and _ref_guild in _ctx_blacklist:
                 print(f"  [discord-state-prefetch] ref <#{ref}> (guild {_ref_guild or '?'}) blocked by contextNotFrom for channel {origin_channel_id} — skipping", flush=True)
                 continue
         formatted = await _fetch_discord_channel_messages(ref)

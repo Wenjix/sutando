@@ -29,6 +29,7 @@ Exit 0 on pass, 1 on fail.
 from __future__ import annotations
 import tempfile
 import os
+import json
 import asyncio
 import importlib.util
 import sys
@@ -433,6 +434,32 @@ def case_l_history_timeout_returns_none():
     return fails
 
 
+def case_m_unresolved_blacklisted_ref_does_not_use_cache():
+    fails = []
+    _clear_cache()
+    origin = 123456
+    ref = 789012
+    access_file = Path(tempfile.mkdtemp()) / "access.json"
+    access_file.write_text(json.dumps({
+        "groups": {str(origin): {"contextNotFrom": ["345678"]}},
+    }))
+    original_access_file = bridge.ACCESS_FILE
+    bridge.ACCESS_FILE = access_file
+    try:
+        _install_mock_client({})
+        bucket = int(time.time() // bridge._PREFETCH_CACHE_TTL_S)
+        bridge._PREFETCH_CACHE[(ref, bucket)] = "cached message without authorization"
+        enriched = asyncio.run(bridge._prefetch_discord_state_refs(
+            f"read <#{ref}>", origin_channel_id=origin))
+        if enriched is not None:
+            fails.append("m) unresolved ref with active contextNotFrom must fail whole prefetch")
+        if enriched and "cached message without authorization" in enriched:
+            fails.append("m) cached text must not be reused when channel resolution fails")
+    finally:
+        bridge.ACCESS_FILE = original_access_file
+    return fails
+
+
 def main():
     cases = [
         ("a-ref-with-perms-prepends", case_a_ref_with_perms_prepends),
@@ -447,6 +474,7 @@ def main():
         ("j-unexpected-exception-silent-fail", case_j_unexpected_exception_silent_fail),
         ("k-partial-failure-fails-whole-prefetch", case_k_partial_failure_fails_whole_prefetch),
         ("l-history-timeout-returns-none", case_l_history_timeout_returns_none),
+        ("m-unresolved-blacklisted-ref-does-not-use-cache", case_m_unresolved_blacklisted_ref_does_not_use_cache),
     ]
     failures = []
     for label, fn in cases:
