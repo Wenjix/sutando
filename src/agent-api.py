@@ -120,6 +120,7 @@ from git_binary import git_argv  # noqa: E402
 from workspace_default import resolve_workspace, status_read_path  # noqa: E402
 import connections as _connections  # noqa: E402
 import local_api_gate  # noqa: E402
+import phone_owner  # noqa: E402
 from sutando_config import config_get  # noqa: E402
 from sutando_platform import probe_pids  # noqa: E402
 import local_task_protocol  # noqa: E402
@@ -182,6 +183,10 @@ CONNECTIONS_BODY_CAP = 16384
 
 def connections_bearer() -> str:
     return local_api_gate.local_api_token(WORKSPACE_DIR, API_TOKEN)
+
+
+def _twilio_sender_tier(sender: str) -> str:
+    return phone_owner.phone_sender_tier(sender, os.environ.get("OWNER_NUMBER", ""))
 
 
 def connections_http(method: str, path: str, body: dict, query: Optional[dict] = None, *,
@@ -1346,7 +1351,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             f"timestamp: {datetime.now().isoformat()}\n"
             f"source: twilio_voice\n"
             f"interaction_type: system_event\n"
-            f"access_tier: owner\n"
+            f"access_tier: {_twilio_sender_tier(caller)}\n"
             f"from: {safe_caller}\n"
             f"call_sid: {call_sid}\n"
             f"task: Incoming phone call from {safe_caller}\n"
@@ -1382,7 +1387,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             f"timestamp: {datetime.now().isoformat()}\n"
             f"source: twilio_sms\n"
             f"interaction_type: message\n"
-            f"access_tier: owner\n"
+            f"access_tier: {_twilio_sender_tier(sender)}\n"
             f"from: {safe_sender}\n"
             f"task: SMS from {safe_sender}: {confine_user_content(body)}\n"
         )
@@ -1409,7 +1414,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f"timestamp: {datetime.now().isoformat()}\n"
                 f"source: twilio_voicemail\n"
                 f"interaction_type: message\n"
-                f"access_tier: owner\n"
+                f"access_tier: {_twilio_sender_tier(caller)}\n"
                 f"from: {safe_caller}\n"
                 f"task: Voicemail from {safe_caller}: {confine_user_content(text)}\n"
             )
