@@ -127,6 +127,40 @@ run(read_task(PUBLIC_CH)[0], env=ENV_HOST)
 assert is_deny(run(bash_read(PRIVATE_CH), env=ENV_HOST)), \
     "per-host CLAUDE_CONFIG_DIR: walk up to nearest .claude-sutando ancestor, resolution stays on <WS>"
 
+def reader_read(command):
+    return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    f"python3 src/discord-read.py {PRIVATE_CH} --operator"))), \
+    "discord-read CLI target in a blacklisted guild must be denied"
+
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    f"python3 src/discord-read.py {PRIVATE_CH} --serving {OTHER_PUB_CH}"))), \
+    "a model-selected serving channel must not replace the recorded serving channel"
+
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    f"python3 src/read_discord_channel.py --serving {OTHER_PUB_CH} --target {PRIVATE_CH}"))), \
+    "read_discord_channel must use the recorded serving channel's blacklist"
+
+run(read_task(PUBLIC_CH)[0])
+assert not is_deny(run(reader_read(
+    f"python3 src/discord-read.py {OTHER_PUB_CH} --operator --limit 5 --after 123"))), \
+    "CLI option values must not be treated as channel targets"
+
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    'python3 src/discord-read.py "$CH" --operator'))), \
+    "a non-literal reader target must be denied under an active blacklist"
+
+(STATE_DIR / "active-serving-channel.json").unlink(missing_ok=True)
+assert not is_deny(run(reader_read(
+    f"python3 src/discord-read.py {PRIVATE_CH} --operator"))), \
+    "reader CLI must remain available without a recorded serving channel"
+
 # 9) inner-fail-closed: exception inside the gated section (non-empty blacklist) must DENY,
 #    not allow. Import the hook as a module and monkey-patch _resolve_guild to throw; the
 #    inner try/except re-raises SystemExit from _deny() correctly and wraps other exceptions.

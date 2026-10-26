@@ -30,6 +30,7 @@ import sys
 import json
 import os
 import re
+import shlex
 import time
 import urllib.request
 
@@ -84,6 +85,78 @@ _TASK_RE = re.compile(r"task-\d+\.txt$")
 _TASKPATH_RE = re.compile(r"([^\s'\"]*task-\d+\.txt)")  # a task-file path inside a Bash command
 _CH_READ_RE = re.compile(r"channels/(\d+)/messages")
 _GUILD_CACHE = os.path.join(WS, "state", ".channel-guild-cache.json")
+_READER_VALUE_OPTIONS = {
+    "discord-read.py": {"--limit", "--after", "--before", "--until", "--serving"},
+    "read_discord_channel.py": {"--serving", "--target", "-n"},
+}
+_READER_FLAG_OPTIONS = {
+    "discord-read.py": {"--full", "--jsonl", "--operator"},
+    "read_discord_channel.py": set(),
+}
+
+
+def _reader_cli_targets(cmd):
+    try:
+        tokens = shlex.split(cmd)
+    except Exception:
+        if re.search(r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
+            return True, [], True
+        return False, [], False
+    indexes = [
+        i for i, token in enumerate(tokens)
+        if os.path.basename(token) in _READER_VALUE_OPTIONS
+        and (i == 0 or os.path.basename(tokens[i - 1]) in {"python", "python3"}
+             or tokens[i - 1] in {"&&", "||", ";", "|", "&"})
+    ]
+    if not indexes:
+        return False, [], False
+    targets = []
+    for index in indexes:
+        script = os.path.basename(tokens[index])
+        value_options = _READER_VALUE_OPTIONS[script]
+        flag_options = _READER_FLAG_OPTIONS[script]
+        args = []
+        for token in tokens[index + 1:]:
+            if token in {"&&", "||", ";", "|", "&"}:
+                break
+            args.append(token)
+        positional = []
+        i = 0
+        target_option = "--target" if script == "read_discord_channel.py" else None
+        target_values = []
+        while i < len(args):
+            arg = args[i]
+            if arg.startswith("--") and "=" in arg:
+                option, value = arg.split("=", 1)
+                if option not in value_options or not value:
+                    return True, [], True
+                if option == target_option:
+                    target_values.append(value)
+                i += 1
+                continue
+            if arg in flag_options:
+                i += 1
+                continue
+            if arg in value_options:
+                if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                    return True, [], True
+                if arg == target_option:
+                    target_values.append(args[i + 1])
+                i += 2
+                continue
+            if arg.startswith("-"):
+                return True, [], True
+            positional.append(arg)
+            i += 1
+        if target_option:
+            if positional or len(target_values) != 1:
+                return True, [], True
+            targets.extend(target_values)
+        else:
+            if len(positional) != 1:
+                return True, [], True
+            targets.extend(positional)
+    return True, targets, False
 
 
 def _read_channel_id_from_task(path):
@@ -215,7 +288,9 @@ def main():
             _record_serving(cid)
 
     targets = _CH_READ_RE.findall(cmd)
-    if not targets:
+    reader_present, reader_targets, reader_parse_error = _reader_cli_targets(cmd)
+    targets.extend(reader_targets)
+    if not targets and not reader_present:
         sys.exit(0)  # not a channel read
 
     serving = _active_serving()
@@ -224,6 +299,10 @@ def main():
     blacklist = _blacklist(serving)
     if not blacklist:
         sys.exit(0)  # serving channel pulls from anywhere
+    if reader_parse_error or any(not re.fullmatch(r"\d+", str(cid)) for cid in reader_targets):
+        _deny("CONTEXT-SOURCE GUARD: a Discord reader target could not be verified; "
+              "use a literal numeric channel ID while a contextNotFrom blacklist is active. "
+              "[context-source-guard]")
 
     # Non-empty blacklist confirmed — fail-CLOSED on any exception from here.
     # An exception that escapes the outer try/except would fail-open; we must
