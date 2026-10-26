@@ -54,6 +54,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -213,6 +214,64 @@ def connections_bearer() -> str:
 
 def _twilio_sender_tier(sender: str) -> str:
     return phone_owner.phone_sender_tier(sender, os.environ.get("OWNER_NUMBER", ""))
+
+
+_TWILIO_CALLER_TTL_SECONDS = 24 * 60 * 60
+_TWILIO_CALLER_LIMIT = 1000
+_TWILIO_CALLERS_LOCK = threading.Lock()
+
+
+def _twilio_caller_records(now: float) -> dict:
+    path = WORKSPACE_DIR / "state" / "twilio-callers.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        call_sid: record
+        for call_sid, record in raw.items()
+        if isinstance(call_sid, str) and isinstance(record, dict)
+        and isinstance(record.get("caller"), str)
+        and isinstance(record.get("expires_at"), (int, float))
+        and record["expires_at"] > now
+    }
+
+
+def _remember_twilio_caller(call_sid: str, caller: str) -> None:
+    if not call_sid or len(call_sid) > 128 or not caller or caller == "unknown" or len(caller) > 64:
+        return
+    now = time.time()
+    path = WORKSPACE_DIR / "state" / "twilio-callers.json"
+    with _TWILIO_CALLERS_LOCK:
+        records = _twilio_caller_records(now)
+        records[call_sid] = {"caller": caller, "expires_at": now + _TWILIO_CALLER_TTL_SECONDS}
+        records = dict(sorted(records.items(), key=lambda item: item[1]["expires_at"], reverse=True)
+                       [: _TWILIO_CALLER_LIMIT])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".twilio-callers.", dir=path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(records, handle, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+def _twilio_caller_for_call(call_sid: str) -> str:
+    if not call_sid or len(call_sid) > 128:
+        return ""
+    with _TWILIO_CALLERS_LOCK:
+        record = _twilio_caller_records(time.time()).get(call_sid)
+    return record["caller"] if record else ""
 
 
 def connections_http(method: str, path: str, body: dict, query: Optional[dict] = None, *,
@@ -1378,6 +1437,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Handle inbound phone call from Twilio webhook."""
         caller = form_data.get("From", ["unknown"])[0]
         call_sid = form_data.get("CallSid", [""])[0]
+        _remember_twilio_caller(call_sid, caller)
 
         # Create a task from the incoming call.
         # source:/from:/call_sid: precede task: so the (Twilio-supplied) caller
@@ -1445,7 +1505,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def handle_twilio_transcription(self, form_data: dict):
         """Handle voicemail transcription callback from Twilio."""
         text = form_data.get("TranscriptionText", [""])[0]
-        caller = form_data.get("From", ["unknown"])[0]
+        caller = form_data.get("From", [""])[0] or _twilio_caller_for_call(
+            form_data.get("CallSid", [""])[0],
+        ) or "unknown"
         if text:
             task_id = f"task-{int(datetime.now().timestamp() * 1000)}"
             safe_caller = confine_user_content(caller)

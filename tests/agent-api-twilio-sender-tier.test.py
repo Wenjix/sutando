@@ -5,6 +5,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
@@ -52,6 +53,30 @@ class TwilioSenderTierTests(unittest.TestCase):
                 self.assertIn("access_tier: owner", self.run_handler(method, "(415) 555-1234", "+14155551234"))
             with self.subTest(method=method, case="unset-owner"):
                 self.assertIn("access_tier: other", self.run_handler(method, "+14155550000", None))
+
+    def test_transcription_without_from_resolves_caller_from_voice_record(self):
+        task_dir = Path(tempfile.mkdtemp(prefix="agent-api-twilio-task-"))
+        api.TASK_DIR = task_dir
+        os.environ["OWNER_NUMBER"] = "+14155551234"
+        handler = api.Handler.__new__(api.Handler)
+        handler.send_twiml = Mock()
+        handler.send_json = Mock()
+        handler.handle_twilio_voice(
+            {"From": ["+14155551234"], "CallSid": ["CA-owner"]})
+        time.sleep(0.002)
+        handler.handle_twilio_transcription(
+            {"TranscriptionText": ["hello"], "CallSid": ["CA-owner"]})
+        time.sleep(0.002)
+        handler.handle_twilio_transcription(
+            {"TranscriptionText": ["hi"], "CallSid": ["CA-stranger"]})
+        voicemails = [
+            f.read_text()
+            for f in sorted(task_dir.glob("task-*.txt"))
+            if "twilio_voicemail" in f.read_text()
+        ]
+        self.assertEqual(len(voicemails), 2)
+        self.assertIn("access_tier: owner", voicemails[0])
+        self.assertIn("access_tier: other", voicemails[1])
 
 
 if __name__ == "__main__":
