@@ -19,17 +19,14 @@ import { CHAT_HTML } from './chat-ui.js';
 import { OVERLAY_MANAGER_HTML } from './overlay-manager-ui.js';
 import { resolveWorkspace, statusReadPath } from './workspace_default.js';
 import { readBodyCapped } from './http-body-limit.js';
+import { browserRequestAllowed, localApiToken } from './local-api-gate.js';
 
 const HTTP_PORT = Number(process.env.CLIENT_PORT) || 8080;
 const HTTP_HOST = process.env.CLIENT_HOST || '0.0.0.0'; // '0.0.0.0' binds to all interfaces for EC2
 const WS_PORT = Number(process.env.PORT) || 9900;
 const DEFAULT_WS_URL = `ws://localhost:${WS_PORT}`;
-// Opt-in LAN sharing. The voice WS (WS_PORT) binds loopback only, so a browser
-// on another device on the same network can't reach it. When enabled, this
-// server proxies WS_PORT through its own LAN-reachable HTTP port at /ws — so a
-// LAN peer reaches the voice agent without WS_PORT itself being exposed. OFF by
-// default: enabling it lets any device on the network use this core's agent
-// (the voice WS has no auth), so it's an explicit choice per network.
+// LAN sharing proxies the local voice bearer to peers on this network.
+// It is off by default and exposes /ws only through this server.
 const LAN_SHARE = /^(1|true|yes|on)$/i.test(process.env.SUTANDO_LAN_SHARE || '');
 
 // Workspace-relative paths use resolveWorkspace() (closes #763). Skills paths
@@ -2120,12 +2117,31 @@ function connectWs() {
     onAnalyser: function (node) { analyserNode = node; startSpeakingDetection(); },
     onStats: function (s) { bytesSent = s.bytesSent; bytesRecv = s.bytesRecv; updateStats(); },
   });
-  // Fire-and-forget by contract: async outcomes arrive via the callbacks.
-  voice.connect(url).catch(function (e) {
-    dbg('connect failed: ' + e, 'err');
-    setStatus('Connection failed', 'error');
-    doCleanup({ keepStatus: true });
-  });
+  const transport = voice;
+  function connectTo(targetUrl) {
+    if (voice !== transport) return;
+    transport.connect(targetUrl).catch(function (e) {
+      dbg('connect failed: ' + e, 'err');
+      setStatus('Connection failed', 'error');
+      doCleanup({ keepStatus: true });
+    });
+  }
+  try {
+    const target = new URL(url, window.location.href);
+    const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname.endsWith('.localhost');
+    if (loopback && target.pathname !== '/ws') {
+      fetch('/voice-ws-token', { cache: 'no-store' }).then(function (r) {
+        if (!r.ok) throw new Error('voice token unavailable');
+        return r.json();
+      }).then(function (data) {
+        if (data && typeof data.token === 'string' && data.token) target.searchParams.set('access_token', data.token);
+        connectTo(target.toString());
+      }).catch(function () { connectTo(url); });
+      return;
+    }
+  } catch {}
+  connectTo(url);
 }
 
 function resetTurnTranscriptState() {
@@ -4262,6 +4278,18 @@ function isLoopbackAddress(address: string | undefined): boolean {
 	return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+function isVoiceTokenHost(host: string | undefined): boolean {
+	if (!host) return false;
+	try {
+		const parsed = new URL(`http://${host}`);
+		if (parsed.username || parsed.password || parsed.pathname !== '/') return false;
+		const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+		return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+	} catch {
+		return false;
+	}
+}
+
 /** /voice-tasks/view: the task table on one page, refreshed every second from /voice-tasks. */
 const VOICE_TASKS_VIEW_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -4297,6 +4325,17 @@ tick();setInterval(tick,1000);
 
 const server = createServer((req, res) => {
 	const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+	if (url.pathname === '/voice-ws-token' && req.method === 'GET') {
+		if (!isLoopbackAddress(req.socket.remoteAddress) || !isVoiceTokenHost(req.headers.host)) {
+			res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			res.end(JSON.stringify({ error: 'forbidden' }));
+			return;
+		}
+		res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+		res.end(JSON.stringify({ token: localApiToken(WORKSPACE_DIR) }));
+		return;
+	}
 
 	// Task history carries owner prompts and result bodies. Keep it behind the
 	// dashboard's same-origin server, forward the configured bearer token, and
@@ -4615,6 +4654,18 @@ const server = createServer((req, res) => {
 		url.pathname === '/vision/stop' ||
 		url.pathname === '/vision/frame'
 	) {
+		if (!LAN_SHARE && !isLoopbackAddress(req.socket.remoteAddress)) {
+			res.writeHead(403, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ status: 'failed', error: 'vision control is local-only' }));
+			return;
+		}
+		const originHeader = req.headers.origin;
+		const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+		if (!browserRequestAllowed(origin, req.headers.host)) {
+			res.writeHead(403, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ status: 'failed', error: 'cross-origin request refused' }));
+			return;
+		}
 		const port = Number(process.env.VISION_CONTROL_PORT) || 7847;
 		const method = req.method === 'POST' ? 'POST' : 'GET';
 		const isFrame = url.pathname === '/vision/frame';
@@ -4627,11 +4678,22 @@ const server = createServer((req, res) => {
 				res.end(JSON.stringify({ status: 'failed', error: 'body too large' }));
 				return;
 			}
+			if ((url.pathname === '/vision/start' || url.pathname === '/vision/stop') && body.byteLength > 0) {
+				const contentType = (req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+				if (contentType !== 'application/json') {
+					res.writeHead(415, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ status: 'failed', error: 'Content-Type must be application/json' }));
+					return;
+				}
+			}
 			try {
 				const incomingType = (req.headers['content-type'] as string | undefined) || (isFrame ? 'image/jpeg' : 'application/json');
 				const r = await fetch(`http://127.0.0.1:${port}${url.pathname}`, {
 					method,
-					headers: method === 'POST' ? { 'Content-Type': incomingType } : undefined,
+					headers: {
+						Authorization: `Bearer ${localApiToken(WORKSPACE_DIR)}`,
+						...(method === 'POST' ? { 'Content-Type': incomingType } : {}),
+					},
 					// Uint8Array view, not the Buffer itself: fetch's BodyInit does not
 					// accept Buffer under @types/node's generic-backed Buffer type.
 					body: method === 'POST' ? (body.byteLength ? new Uint8Array(body) : (isFrame ? new Uint8Array(0) : '{}')) : undefined,
@@ -4819,11 +4881,8 @@ const server = createServer((req, res) => {
 	res.end(HTML);
 });
 
-// LAN-share WS proxy: forward an upgrade on /ws to the loopback voice WS. Only
-// active when SUTANDO_LAN_SHARE is enabled; otherwise the upgrade is refused
-// (loopback clients connect to WS_PORT directly and never hit this path). The
-// handshake bytes (incl. Sec-WebSocket-Key) are replayed verbatim to WS_PORT
-// with the path rewritten to '/', then the two sockets are piped together.
+// The /ws proxy forwards only origin-checked upgrades and supplies the local bearer.
+// LAN access remains gated by SUTANDO_LAN_SHARE; loopback reverse proxies stay supported.
 server.on('upgrade', (req, socket, head) => {
 	const path = (req.url || '').split('?')[0];
 	// Allow the /ws proxy when the upgrade arrives over LOOPBACK — i.e. from a
@@ -4839,29 +4898,28 @@ server.on('upgrade', (req, socket, head) => {
 		socket.destroy();
 		return;
 	}
-	// Same-origin guard — applied only to DIRECT (non-loopback) clients, i.e. the
-	// LAN-share path. Browser WebSockets aren't CORS-protected, so a page on any
-	// site a LAN device visits could target ws://<core>:8080/ws; require the
-	// Origin to match the request Host so only the Sutando UI served from this
-	// host can open it. Loopback sources (a same-host reverse proxy) are trusted
-	// and skip this — Host/Origin can legitimately differ across proxying.
-	const origin = req.headers.origin;
-	if (!fromLoopback && origin) {
-		let originHost: string;
-		try {
-			originHost = new URL(origin).host;
-		} catch {
-			originHost = '\0'; // unparseable Origin → never matches
-		}
-		if (originHost !== req.headers.host) {
-			socket.destroy();
-			return;
-		}
+	const originHeader = req.headers.origin;
+	const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+	if (!browserRequestAllowed(origin, req.headers.host)) {
+		socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+		socket.destroy();
+		return;
 	}
 	const upstream = netConnect(WS_PORT, '127.0.0.1', () => {
-		const lines = [`${req.method} / HTTP/1.1`];
+		const search = (req.url || '').includes('?') ? `?${(req.url || '').split('?').slice(1).join('?')}` : '';
+		const lines = [`${req.method} /${search} HTTP/1.1`];
 		for (let i = 0; i < req.rawHeaders.length; i += 2) {
-			lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+			const name = req.rawHeaders[i].toLowerCase();
+			if (name !== 'origin' && name !== 'authorization') {
+				lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+			}
+		}
+		try {
+			lines.push(`Authorization: Bearer ${localApiToken(WORKSPACE_DIR)}`);
+		} catch {
+			socket.destroy();
+			upstream.destroy();
+			return;
 		}
 		upstream.write(lines.join('\r\n') + '\r\n\r\n');
 		if (head && head.length) upstream.write(head);
