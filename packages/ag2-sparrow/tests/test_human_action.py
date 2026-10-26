@@ -179,6 +179,12 @@ def test_answers_ignore_quoted_context_and_prefer_structured_clicks():
     check(json.loads(Path(context.dir, context_rec["action_id"] + ".json").read_text())["status"] == "pending",
           "broker context and a quoted answer command stay pending")
 
+    separator, separator_rec = _store_with_action()
+    ha.DecisionHandler(separator, OWNER, log=lambda *_: None).offer(
+        _message("thanks\n> earlier\u2028answer ha_abc123def456 2"))
+    check(json.loads(Path(separator.dir, separator_rec["action_id"] + ".json").read_text())["status"] == "pending",
+          "a quote line containing a Unicode line separator stays pending")
+
     own, own_rec = _store_with_action()
     ha.DecisionHandler(own, OWNER, log=lambda *_: None).offer(
         _message("> quoted\n\nanswer ha_abc123def456 1"))

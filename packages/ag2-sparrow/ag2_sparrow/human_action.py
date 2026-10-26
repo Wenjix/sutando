@@ -80,8 +80,8 @@ def _text(event: dict) -> "tuple[str, str]":
     content = event.get("content") or {}
     body = reply_action_text(str(content.get("body") or content.get("text") or ""))
     body = "\n".join(
-        line for line in body.splitlines()
-        if line != ">" and not line.startswith(("> ", ">\t")))
+        line for line in body.split("\n")
+        if line.rstrip("\r") != ">" and not line.startswith(("> ", ">\t")))
     click = content.get("space.ag2.a2ui.action")
     click_text = ""
     if isinstance(click, dict):
