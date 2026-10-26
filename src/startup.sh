@@ -1291,6 +1291,8 @@ if [ "${SKIP_PHONE:-}" = "1" ]; then
 elif ! phone_stack_enabled; then
   echo "  ~ conversation server (disabled — no Gemini voice key)"
 elif twilio_creds_present; then
+  # shellcheck source=src/ngrok-tunnel-policy.sh
+  source "$REPO/src/ngrok-tunnel-policy.sh"
   # _cs_up=1 only when a :3100 LISTEN socket belongs to the conversation-server
   # process itself; a dead or foreign socket must never get a public tunnel.
   _cs_up=0
@@ -1338,22 +1340,35 @@ elif twilio_creds_present; then
     NGROK_DOMAIN_VAL=$(grep -E '^NGROK_DOMAIN=' .env 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
     if [ -n "$NGROK_DOMAIN_VAL" ]; then
       ngrok http 3100 --domain="$NGROK_DOMAIN_VAL" --log=stdout > /tmp/ngrok.log 2>&1 &
+      NGROK_PID=$!
     else
       ngrok http 3100 --log=stdout > /tmp/ngrok.log 2>&1 &
+      NGROK_PID=$!
     fi
     sleep 3
+    NGROK_API_PORT="$(ngrok_api_port "$NGROK_PID" 2>/dev/null || true)"
     # `${PY:-cat} -c` was not a fallback: with no interpreter it runs `cat -c`,
     # which is not a valid cat invocation on either BSD or GNU. It fails, the
     # `|| echo ""` swallows it, and the operator is left with a running ngrok
     # tunnel and a stale WEBHOOK_BASE_URL — Twilio then posts to the previous
     # session's URL. Skip explicitly and say why instead.
-    if [ -n "$PY" ]; then
-      NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | "$PY" -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'])" 2>/dev/null || echo "")
+    if [ -z "$NGROK_API_PORT" ]; then
+      NGROK_URL_STATE="api-not-found"
+      echo "  ⚠ ngrok API not found on the ngrok process just started — WEBHOOK_BASE_URL not updated" >&2
+    elif [ -n "$PY" ]; then
+      NGROK_URL=$(curl -s "http://127.0.0.1:$NGROK_API_PORT/api/tunnels" 2>/dev/null | "$PY" -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'])" 2>/dev/null || echo "")
+      if webhook_base_url_valid "$NGROK_URL" "$NGROK_DOMAIN_VAL"; then
+        NGROK_URL_STATE="valid"
+      else
+        NGROK_URL_STATE="invalid"
+        echo "  ✗ ngrok reported a public URL that is not a plain https origin — WEBHOOK_BASE_URL not updated" >&2
+      fi
     else
+      NGROK_URL_STATE="failed"
       NGROK_URL=""
       echo "  ⊘ ngrok URL not parsed — no runnable python3; set WEBHOOK_BASE_URL in .env manually"
     fi
-    if [ -n "$NGROK_URL" ]; then
+    if [ "$NGROK_URL_STATE" = "valid" ]; then
       # Update WEBHOOK_BASE_URL in .env — portable in-place edit.
       # `sed -i ''` is BSD-only; on Macs with Homebrew gnu-sed in PATH it
       # silently fails (treats '' as an input filename). tmpfile + mv works
@@ -1397,7 +1412,7 @@ elif twilio_creds_present; then
           echo "         after the restart (no argument: it reads the tunnel the server bound)"
         fi
       fi
-    else
+    elif [ "$NGROK_URL_STATE" != "api-not-found" ] && [ "$NGROK_URL_STATE" != "invalid" ]; then
       echo "  ✗ ngrok (failed to start)"
     fi
   else
