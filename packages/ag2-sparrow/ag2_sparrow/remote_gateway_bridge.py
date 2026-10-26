@@ -1242,6 +1242,10 @@ def _handle_hitl_action(task: dict):
         return False
     if out == "rejected":
         return "rejected:" + (getattr(handler, "last_reason", "") or "stale or malformed")
+    if out == "refused":
+        if getattr(handler, "last_branch", None) == "fallback":
+            return False
+        return "refused:" + (getattr(handler, "last_reason", "") or "not at owner tier")
     if out == "applied" and getattr(handler, "last_turn", False):
         # Recorded, and the requirement asked for a turn: the same relay task goes on to
         # the core (idempotent by id) with a header saying it is a click, not an order.
@@ -1666,8 +1670,11 @@ def _hitl_reply_handler(owner_mxid: str, log=print):
             return None
         manager_mod, _, replies = mods
         workspace = _STATE.parent
-        return replies.HitlReplyHandler(manager_mod.HitlManager(manager_mod.HitlStore(manager_mod.default_store(workspace))),
-                                        owner_mxid, workspace=workspace, log=log)
+        return replies.HitlReplyHandler(
+            manager_mod.HitlManager(manager_mod.HitlStore(manager_mod.default_store(workspace))),
+            owner_mxid, workspace=workspace, log=log,
+            authorize=lambda ev: _click_owner_problem(
+                owner_mxid, str(ev.get("actor_id") or ""), ev.get("access_tier")))
     except Exception as e:  # noqa: BLE001 — an optional handler must never break the chain
         log(f"hitl: reply handler unavailable ({diagnostics.describe(e)}); card clicks will not be applied")
         return None
@@ -1748,6 +1755,8 @@ def _hitl_control_body(hitl_out) -> str:
     if out.startswith(REARM_PENDING):
         return (f"Recorded: keep waiting. The new card could not be raised yet ({out[len(REARM_PENDING):]}); "
                 "the launcher completes it at its next reconcile.")
+    if out.startswith("refused:"):
+        return f"That click did not apply: {out[8:]}."
     if out.startswith("rejected:"):
         return f"That click did not apply: the card had already moved ({out[9:]}). Please use the current card."
     if out.startswith("cancelled:"):
