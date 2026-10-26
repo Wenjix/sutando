@@ -177,14 +177,71 @@ def test_enrollment_check_delegates_to_policy():
     assert calls == [(challenge, "delegated")]
 
 
-def test_main_constructs_challenge_and_prints_banner():
-    body = _main_body()
-    assert re.search(
-        r"if not ACCESS_FILE\.exists\(\):\s*_TOFU_ENROLLMENT\s*=\s*"
-        r"tofu_enrollment\.EnrollmentChallenge\(",
-        body,
-    )
-    assert "tofu_enrollment.banner_lines(" in body
+def test_failed_onboard_releases_the_code_for_retry():
+    challenge = _new_challenge()
+    calls: list[tuple] = []
+    replies: list[dict] = []
+    original_api = BRIDGE.api
+    original_onboard = BRIDGE.tofu_onboard
+    state = {"fail": True}
+
+    def fake_onboard(uid, username):
+        calls.append((uid, username))
+        if state["fail"]:
+            raise OSError("disk full")
+        return {uid}
+
+    BRIDGE.api = lambda method, **params: replies.append({"method": method, **params})
+    BRIDGE.tofu_onboard = fake_onboard
+    try:
+        try:
+            BRIDGE._admit_first_owner("123", "owner", 123, True, challenge.code)
+            raise AssertionError("first attempt should propagate the write failure")
+        except OSError:
+            pass
+        # The reservation must have been released: the same code can retry,
+        # and a concurrent sender cannot steal the slot in between.
+        assert challenge.check(challenge.code) == BRIDGE.tofu_enrollment.ACCEPTED
+        challenge.release()
+        state["fail"] = False
+        result = BRIDGE._admit_first_owner("123", "owner", 123, True, challenge.code)
+        assert result == {"123"}
+        assert challenge.check(challenge.code) == BRIDGE.tofu_enrollment.CLOSED
+    finally:
+        BRIDGE.api = original_api
+        BRIDGE.tofu_onboard = original_onboard
+        BRIDGE._TOFU_ENROLLMENT = None
+    assert calls == [("123", "owner"), ("123", "owner")]
+
+
+def test_init_enrollment_issues_and_announces_code_only_when_unenrolled(capsys=None):
+    import io
+    import contextlib
+    import tempfile
+
+    original_access = BRIDGE.ACCESS_FILE
+    BRIDGE._TOFU_ENROLLMENT = None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "access.json"
+            BRIDGE.ACCESS_FILE = missing
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                challenge = BRIDGE._init_enrollment()
+            assert isinstance(challenge, BRIDGE.tofu_enrollment.EnrollmentChallenge)
+            assert BRIDGE._TOFU_ENROLLMENT is challenge
+            assert f"Enrollment code: {challenge.code}" in buf.getvalue()
+
+            missing.write_text('{"allowFrom": ["1"]}')
+            BRIDGE._TOFU_ENROLLMENT = None
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert BRIDGE._init_enrollment() is None
+            assert BRIDGE._TOFU_ENROLLMENT is None
+            assert "Enrollment code" not in buf.getvalue()
+    finally:
+        BRIDGE.ACCESS_FILE = original_access
+        BRIDGE._TOFU_ENROLLMENT = None
 
 
 def test_poll_loop_calls_first_owner_helper():
@@ -199,7 +256,8 @@ def main() -> int:
         ("closes when no challenge exists", test_missing_challenge_returns_closed_reply),
         ("closes after five wrong attempts", test_five_wrong_attempts_close_enrollment),
         ("delegates enrollment checks to shared policy", test_enrollment_check_delegates_to_policy),
-        ("constructs and prints the startup challenge", test_main_constructs_challenge_and_prints_banner),
+        ("releases the code for retry after a failed onboard", test_failed_onboard_releases_the_code_for_retry),
+        ("issues the startup code only when unenrolled", test_init_enrollment_issues_and_announces_code_only_when_unenrolled),
         ("uses the enrollment helper in the poll loop", test_poll_loop_calls_first_owner_helper),
     ]
     failures = 0

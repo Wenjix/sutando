@@ -1032,7 +1032,12 @@ def _write_task(event: dict, prefix: str, text: str, username: str | None) -> st
                 pass
             print(f"  TOFU: {verdict} enrollment attempt from {user_id}", flush=True)
             return None
-        allowed = tofu_onboard(user_id, username)
+        try:
+            allowed = tofu_onboard(user_id, username)
+        except Exception:
+            tofu_enrollment.release_enrollment(_TOFU_ENROLLMENT)
+            raise
+        tofu_enrollment.commit_enrollment(_TOFU_ENROLLMENT)
     # Every _write_task call is a DM (handle_message) or an @mention
     # (handle_mention), so a non-allowlisted sender here DID address the bot —
     # ack them (rate-limited) before the fail-closed drop so it isn't silent.

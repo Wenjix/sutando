@@ -298,7 +298,13 @@ def _admit_first_owner(sender_id, username, chat_id, chat_is_private, text):
         api("sendMessage", chat_id=chat_id, text=tofu_enrollment.reply_for(verdict))
         print(f"  TOFU: {verdict} enrollment attempt from @{username}", flush=True)
         return None
-    return tofu_onboard(sender_id, username)
+    try:
+        allowed = tofu_onboard(sender_id, username)
+    except Exception:
+        tofu_enrollment.release_enrollment(_TOFU_ENROLLMENT)
+        raise
+    tofu_enrollment.commit_enrollment(_TOFU_ENROLLMENT)
+    return allowed
 
 
 def api(method, **params):
@@ -741,8 +747,18 @@ def log_privacy_setting(get_me):
     )
 
 
-def main():  # pragma: no cover
+def _init_enrollment():
+    """Issue and announce the startup enrollment code when no access file exists."""
     global _TOFU_ENROLLMENT
+    if ACCESS_FILE.exists():
+        return None
+    _TOFU_ENROLLMENT = tofu_enrollment.EnrollmentChallenge()
+    for line in tofu_enrollment.banner_lines(_TOFU_ENROLLMENT):
+        print(line, flush=True)
+    return _TOFU_ENROLLMENT
+
+
+def main():  # pragma: no cover
     _single_instance_acquire("telegram-bridge")
     print("Telegram bridge started. Polling for messages...", flush=True)
     print(log_privacy_setting(lambda: api("getMe")), flush=True)
@@ -750,10 +766,7 @@ def main():  # pragma: no cover
     # loop starts. See _recover_orphan_sending_files for rationale.
     _recover_orphan_sending_files()
 
-    if not ACCESS_FILE.exists():
-        _TOFU_ENROLLMENT = tofu_enrollment.EnrollmentChallenge()
-        for line in tofu_enrollment.banner_lines(_TOFU_ENROLLMENT):
-            print(line, flush=True)
+    _init_enrollment()
 
     offset = None
     allowed = load_allowed()
