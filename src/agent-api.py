@@ -1028,8 +1028,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def check_private_history_auth(self) -> bool:
         """Fail closed for browsers and non-loopback clients without a token."""
+        client_address = getattr(self, "client_address", None)
+        client_ip = client_address[0] if client_address else "0.0.0.0"
         status, why = local_api_gate.private_history_request_allowed(
-            self.client_address[0], self.headers.get("Origin"), self.headers.get("Authorization", ""),
+            client_ip, self.headers.get("Origin"), self.headers.get("Authorization", ""),
             configured_token=API_TOKEN)
         if status != 200:
             self.send_private_json(status, {"error": why})
@@ -1043,8 +1045,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
 
     def check_local_owner_auth(self, *, require_bearer=False, content_type=None, send=None) -> bool:
+        client_address = getattr(self, "client_address", None)
+        client_ip = client_address[0] if client_address else "0.0.0.0"
         status, why = local_api_gate.local_owner_request_allowed(
-            self.client_address[0], self.headers.get("Origin"), self.headers.get("Host", ""),
+            client_ip, self.headers.get("Origin"), self.headers.get("Host", ""),
             self.headers.get("Authorization", ""), expected_token=connections_bearer(),
             bound_port=self._bound_port(), require_bearer=require_bearer,
             content_type=content_type)
