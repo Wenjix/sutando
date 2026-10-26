@@ -31,7 +31,6 @@ convert to a dependency with this API unchanged.
 from __future__ import annotations
 
 import errno as _errno
-import json
 import math
 import os.path
 import re
@@ -40,6 +39,7 @@ import threading
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass, field
+from json import dumps as _json_dumps
 from typing import Any, Callable, Mapping, Sequence
 
 # Canonical alias precedence (earlier wins). GATEWAY_* primary; RELAY_* and
@@ -158,7 +158,7 @@ def forms(secret: str) -> "set[str]":
     out = set()
     for s in {secret, urllib.parse.unquote(secret), urllib.parse.unquote_plus(secret)}:
         out |= {s, repr(s)[1:-1], s.encode("unicode_escape").decode("ascii"),
-                ascii(s)[1:-1], s.encode("ascii", "backslashreplace").decode("ascii"), json.dumps(s)[1:-1]}
+                ascii(s)[1:-1], s.encode("ascii", "backslashreplace").decode("ascii"), _json_dumps(s)[1:-1]}
         out |= {quote(raw, safe=safe) for raw in _utf8(s) for quote in (urllib.parse.quote, urllib.parse.quote_plus)
                 for safe in ("", "/=&?#:@")}
     return {f for f in out if f}
@@ -590,7 +590,9 @@ def _groups(text: str, quotes: bool = True) -> "list[list[str]]":
         body = line.rstrip("\r\n")
         if not current:
             m = _ASSIGNMENT_LINE_RE.match(body) if quotes else None
-            assignment, quote = bool(m), _open_quote("", m.group(5)) if m else ""
+            value = m.group(5).lstrip() if m else ""
+            assignment = bool(value.startswith(("'", '"')) and not sets_environment(body))
+            quote = _open_quote("", m.group(5)) if assignment else ""
         elif assignment:
             quote = _open_quote(quote, body)
         current.append(line)
