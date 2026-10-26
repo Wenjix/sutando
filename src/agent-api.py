@@ -179,9 +179,28 @@ SAFE_TYPES = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".mp3": "audio/mpeg",
     ".wav": "audio/wav", ".pdf": "application/pdf", ".json": "application/json",
     ".txt": "text/plain", ".html": "text/html", ".css": "text/css",
-    ".js": "application/javascript",
+    ".js": "application/javascript", ".jsonl": "application/x-ndjson",
 }
 _PRIVATE_MEDIA_DIRS = frozenset({"state", "tasks", "logs", "hosts"})
+# Owner-facing feeds under state/ that clients legitimately fetch through
+# /media/ (skills/agent-activity/SKILL.md documents the route contract).
+_PUBLIC_STATE_FEEDS = frozenset({
+    "agent-activity.jsonl", "agent-activity.summaries.jsonl",
+    "agent-activity.archive.jsonl", "connect-cards.json", "local-cards.json",
+})
+_PUBLIC_STATE_FEED_RE = re.compile(r"agent-activity\.archive\.\d{4}-\d{2}-\d{2}\.jsonl")
+
+
+def _media_rel_allowed(parts) -> bool:
+    """First-component policy; applied to the request path and the resolved
+    path so a symlink in a public dir cannot reach a private one."""
+    first = parts[0].lower()
+    if first == "state":
+        return len(parts) == 2 and (
+            parts[1].lower() in _PUBLIC_STATE_FEEDS
+            or _PUBLIC_STATE_FEED_RE.fullmatch(parts[1].lower()) is not None
+        )
+    return first not in _PRIVATE_MEDIA_DIRS
 
 
 def _media_file(rel: str) -> Optional[Path]:
@@ -192,11 +211,13 @@ def _media_file(rel: str) -> Optional[Path]:
     if not components:
         raise ValueError("invalid path")
     safe_parts = [Path(part).name for part in components]
-    if safe_parts[0].lower() in _PRIVATE_MEDIA_DIRS or any(part.startswith(".") for part in safe_parts):
+    if any(part.startswith(".") for part in safe_parts) or not _media_rel_allowed(safe_parts):
         return None
     workspace = WORKSPACE_DIR.resolve()
     media_path = workspace.joinpath(*safe_parts).resolve()
     if not media_path.is_relative_to(workspace) or not media_path.is_file():
+        return None
+    if not _media_rel_allowed(media_path.relative_to(workspace).parts):
         return None
     if media_path.suffix.lower() not in SAFE_TYPES:
         return None
