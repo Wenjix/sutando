@@ -609,7 +609,19 @@ def _groups(text: str, quotes: bool = True) -> "list[list[str]]":
 
 
 def _join(group: "list[str]") -> str:
-    kept = [line.rstrip("\r\n") for i, line in enumerate(group) if i == 0 or not _is_comment(line)]
+    # A #-leading line inside an open quote is value text, not a comment.
+    kept, quote = [], ""
+    for i, line in enumerate(group):
+        body = line.rstrip("\r\n")
+        if i == 0:
+            m = _ASSIGNMENT_LINE_RE.match(body)
+            quote = _open_quote("", m.group(5)) if m else ""
+            kept.append(body)
+            continue
+        if _is_comment(body) and not quote:
+            continue
+        quote = _open_quote(quote, body)
+        kept.append(body)
     return " ".join(p[:-1] if p.endswith("\\") and i < len(kept) - 1 else p for i, p in enumerate(kept))
 
 

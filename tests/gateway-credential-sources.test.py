@@ -189,6 +189,18 @@ class PureContractCases:
             f"PRIVATE_KEY={self.c.WITHHELD}\necho hi\n",
         )
 
+    def test_hash_line_inside_a_quoted_credential_stays_in_the_value(self):
+        unit = 'REMOTE_TASK_TOKEN="first\n# second\nthird"\n'
+        self.assertEqual(
+            self.c.mask_env_assignments(unit),
+            f"REMOTE_TASK_TOKEN={self.c.WITHHELD}\n",
+        )
+        registry = self.c.SecretRegistry()
+        self.c.register_assignments(registry, unit)
+        # The parsed value keeps the #-leading line, so it is masked wherever it recurs.
+        self.assertTrue(registry.contains("first\n# second\nthird"))
+        self.assertNotIn("second", registry.scrub("see first\n# second\nthird"))
+
     def test_unterminated_quoted_private_key_does_not_expose_body_lines(self):
         unit = (
             'PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n'
