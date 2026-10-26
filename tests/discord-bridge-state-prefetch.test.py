@@ -460,6 +460,28 @@ def case_m_unresolved_blacklisted_ref_does_not_use_cache():
     return fails
 
 
+def case_n_guildless_channel_fails_closed_under_blacklist():
+    fails = []
+    _clear_cache()
+    origin = 123456
+    ref = 789012
+    access_file = Path(tempfile.mkdtemp()) / "access.json"
+    access_file.write_text(json.dumps({
+        "groups": {str(origin): {"contextNotFrom": ["345678"]}},
+    }))
+    original_access_file = bridge.ACCESS_FILE
+    bridge.ACCESS_FILE = access_file
+    try:
+        _install_mock_client({ref: _MockChannel(ref)})
+        enriched = asyncio.run(bridge._prefetch_discord_state_refs(
+            f"read <#{ref}>", origin_channel_id=origin))
+        if enriched is not None:
+            fails.append("n) a ref whose guild cannot be proven must fail the prefetch")
+    finally:
+        bridge.ACCESS_FILE = original_access_file
+    return fails
+
+
 def main():
     cases = [
         ("a-ref-with-perms-prepends", case_a_ref_with_perms_prepends),
@@ -475,6 +497,7 @@ def main():
         ("k-partial-failure-fails-whole-prefetch", case_k_partial_failure_fails_whole_prefetch),
         ("l-history-timeout-returns-none", case_l_history_timeout_returns_none),
         ("m-unresolved-blacklisted-ref-does-not-use-cache", case_m_unresolved_blacklisted_ref_does_not_use_cache),
+        ("n-guildless-channel-fails-closed-under-blacklist", case_n_guildless_channel_fails_closed_under_blacklist),
     ]
     failures = []
     for label, fn in cases:

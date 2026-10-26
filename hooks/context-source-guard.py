@@ -22,8 +22,9 @@ for unknown-serving-channel (interactive/diagnostic reads outside task processin
 Once a non-empty blacklist is confirmed, any subsequent error is fail-CLOSED — never
 let an exception bypass an active guard.
 
-Deploy: copy to ~/.claude/hooks/ and register under PreToolUse for BOTH the "Bash"
-and "Read" matchers in ~/.claude/settings.json. See hooks/README.md. Config paths are
+Deploy: copy this file AND _shell_scan.py to ~/.claude/hooks/, then register under
+PreToolUse for BOTH the "Bash" and "Read" matchers in ~/.claude/settings.json.
+See hooks/README.md. Config paths are
 env-overridable (SUTANDO_DISCORD_ACCESS_FILE / SUTANDO_DISCORD_ENV_FILE) for testing.
 """
 import sys
@@ -34,7 +35,10 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _shell_scan  # noqa: E402  (sibling module; path set above)
+try:
+    import _shell_scan  # noqa: E402  (sibling module; path set above)
+except ImportError:
+    _shell_scan = None
 
 # Resolve the Claude config dir via $CLAUDE_CONFIG_DIR (set by Claude Code),
 # matching read_discord_channel.py/discord-bridge's claude_home_path — NOT a
@@ -97,6 +101,44 @@ _READER_FLAG_OPTIONS = {
 }
 
 
+_SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "ksh"}
+_PREFIX_COMMANDS = {"env", "exec", "command", "builtin", "nohup", "setsid", "sudo"}
+
+
+def _unwrap_segments(tokens, depth=0):
+    """Peel `bash -c '...'` wrappers and prefix commands; None = unparseable."""
+    if depth > 4:
+        return [tokens]
+    stripped = list(tokens)
+    while stripped and os.path.basename(stripped[0]) in _PREFIX_COMMANDS:
+        head = os.path.basename(stripped.pop(0))
+        if head == "env":
+            while stripped and (stripped[0].startswith("-") or "=" in stripped[0]):
+                stripped.pop(0)
+    if not stripped:
+        return [tokens]
+    if os.path.basename(stripped[0]) in _SHELL_WRAPPERS:
+        for i in range(1, len(stripped)):
+            arg = stripped[i]
+            if arg == "-c":
+                if i + 1 >= len(stripped):
+                    return [tokens]
+                try:
+                    inner = _shell_scan.segments(stripped[i + 1])
+                except Exception:
+                    return None
+                out = []
+                for inner_segment in inner:
+                    sub = _unwrap_segments([w.text for w in inner_segment], depth + 1)
+                    if sub is None:
+                        return None
+                    out.extend(sub)
+                return out or [tokens]
+            if not arg.startswith("-"):
+                break  # a script file argument, not a -c payload
+    return [stripped]
+
+
 def _reader_cli_targets(cmd):
     try:
         segments = _shell_scan.segments(cmd)
@@ -104,7 +146,17 @@ def _reader_cli_targets(cmd):
         if re.search(r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
             return True, [], True
         return False, [], False
-    token_segments = [[word.text for word in segment] for segment in segments]
+    token_segments = []
+    unparseable_inner = False
+    for segment in segments:
+        unwrapped = _unwrap_segments([word.text for word in segment])
+        if unwrapped is None:
+            unparseable_inner = True
+            continue
+        token_segments.extend(unwrapped)
+    if unparseable_inner and re.search(
+            r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
+        return True, [], True
     if not token_segments and re.search(
             r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
         return True, [], True
@@ -284,6 +336,15 @@ def main():
         sys.exit(0)
 
     cmd = ti.get("command", "") or ""
+
+    # A missing _shell_scan sibling means the deploy copied the hook alone —
+    # deny any command that could be a channel read rather than crashing open.
+    if _shell_scan is None:
+        if _CH_READ_RE.search(cmd) or re.search(
+                r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
+            _deny("CONTEXT-SOURCE GUARD: the _shell_scan.py sibling is missing — deploy "
+                  "hooks/_shell_scan.py next to this hook. [context-source-guard]")
+        sys.exit(0)
 
     # Serving detection is NOT only via the Read tool — agents frequently `cat`/
     # `grep`/`head` the task file in Bash. Whenever a Bash command references a

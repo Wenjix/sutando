@@ -181,6 +181,38 @@ for command in ("cat src/discord-read.py", "grep x src/discord-read.py"):
     assert not is_deny(run(reader_read(command))), \
         f"a reader script path used as a non-invocation must remain allowed: {command}"
 
+# 10) shell-wrapped reader invocations must not bypass the guard.
+wrapped_invocations = (
+    f"bash -c 'python3 src/discord-read.py {PRIVATE_CH} --operator'",
+    f"env FOO=1 exec bash -c 'python3 src/discord-read.py {PRIVATE_CH} --operator'",
+    f"sh -c 'cd /tmp && python3 src/discord-read.py {PRIVATE_CH} --operator'",
+    f"bash -c 'echo hi; python3 src/discord-read.py {PRIVATE_CH} --operator'",
+)
+for command in wrapped_invocations:
+    run(read_task(PUBLIC_CH)[0])
+    assert is_deny(run(reader_read(command))), \
+        f"shell-wrapped reader invocation must be denied: {command}"
+
+run(read_task(PUBLIC_CH)[0])
+assert not is_deny(run(reader_read("bash -c 'echo hello'"))), \
+    "a wrapped non-reader command must be allowed"
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    f"bash -c 'python3 src/discord-read.py \"$CH\" --operator'"))), \
+    "a wrapped non-literal reader target must be denied under an active blacklist"
+
+# 11) missing _shell_scan sibling: the hook must DENY a channel read, not crash-open.
+import shutil
+lonely_dir = Path(tempfile.mkdtemp())
+lonely_hook = lonely_dir / "context-source-guard.py"
+shutil.copy(HOOK, lonely_hook)
+proc = subprocess.run([sys.executable, str(lonely_hook)],
+                      input=json.dumps(bash_read(PRIVATE_CH)),
+                      capture_output=True, text=True, timeout=20, env=ENV)
+assert proc.returncode == 0, f"hook crashed without its sibling: {proc.stderr[:200]}"
+assert is_deny(proc.stdout.strip()), \
+    "deployed without _shell_scan.py the guard must deny channel reads, not crash-open"
+
 # 9) inner-fail-closed: exception inside the gated section (non-empty blacklist) must DENY,
 #    not allow. Import the hook as a module and monkey-patch _resolve_guild to throw; the
 #    inner try/except re-raises SystemExit from _deny() correctly and wraps other exceptions.
@@ -229,4 +261,5 @@ assert _denied_in_gated_section, "inner gated section: exception must fail-close
 print("PASS: context-source-guard — serve public-ch blocks a private-guild read (Read- and cat-paths, "
       "+ fail-closed), allows public channels, serving the private channel reads itself, plain bash untouched, "
       "+ SUTANDO_WORKSPACE ignored (#1698), + per-host CLAUDE_CONFIG_DIR resolves via nearest .claude-sutando ancestor, "
-      "+ inner gated section: exception fails-closed (security finding #4 fix)")
+      "+ inner gated section: exception fails-closed (security finding #4 fix), "
+      "+ shell-wrapped reader invocations denied, + missing _shell_scan sibling fails closed")

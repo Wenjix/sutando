@@ -1612,7 +1612,12 @@ async def _prefetch_discord_state_refs(user_task_text, origin_channel_id=None):
             except Exception as e:
                 print(f"  [discord-state-prefetch] ref <#{ref}> could not be resolved while contextNotFrom is active: {e}; failing whole prefetch", flush=True)
                 return None
-            if _ref_guild and _ref_guild in _ctx_blacklist:
+            if not _ref_guild:
+                # An unresolved guild under an active blacklist cannot prove it is
+                # not the blocked guild — fail the prefetch rather than risk it.
+                print(f"  [discord-state-prefetch] ref <#{ref}> has no resolvable guild while contextNotFrom is active; failing whole prefetch", flush=True)
+                return None
+            if _ref_guild in _ctx_blacklist:
                 print(f"  [discord-state-prefetch] ref <#{ref}> (guild {_ref_guild or '?'}) blocked by contextNotFrom for channel {origin_channel_id} — skipping", flush=True)
                 continue
         formatted = await _fetch_discord_channel_messages(ref)

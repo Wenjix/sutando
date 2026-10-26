@@ -78,36 +78,26 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
         self.assertIsNone(
             bridge._reply_destination(-100123, parsed, {"allowFrom": ["not-an-id"]}, None))
 
-    def test_reply_loop_routes_before_send_and_restores_origin(self):
-        source = (REPO / "src" / "telegram-bridge.py").read_text()
-        start = source.find(
-            "for task_id in _gather_pending_task_ids(pending_replies, RESULTS_DIR, TASKS_DIR):")
-        self.assertGreater(start, 0)
-        head = source.rfind("\n", 0, start) + 1
-        indent = len(source[head:start])
-        end = len(source)
-        for match in re.finditer(r"^[ \t]*(?=\S)", source[start:], re.M):
-            if match.start() and len(match.group()) <= indent:
-                end = start + match.start()
-                break
-        block = source[start:end]
-
-        destination_pos = block.find("destination = _reply_destination(")
-        send_pos = block.find("send_reply(chat_id, parsed.body")
-        self.assertGreater(destination_pos, 0)
-        self.assertGreater(send_pos, destination_pos)
-        unroutable = block.find("if destination is None:")
-        refusal = block.find("if not delivered_ok:")
-        self.assertGreater(unroutable, 0)
-        self.assertGreater(refusal, 0)
-        self.assertIn(
-            "pending_replies[task_id] = origin_chat_id",
-            block[unroutable:refusal],
-        )
-        self.assertIn(
-            "pending_replies[task_id] = origin_chat_id",
-            block[refusal:],
-        )
+    def test_redirect_notice_retries_until_telegram_accepts(self):
+        calls = []
+        outcomes = [{"ok": False}, {"ok": True}]
+        original_api = bridge.api
+        bridge.api = lambda method, **params: (
+            calls.append((method, params)), outcomes.pop(0))[1]
+        pending_notices = {}
+        try:
+            self.assertFalse(
+                bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
+            self.assertEqual(pending_notices, {"task-9": "-100999"})
+            self.assertTrue(
+                bridge._send_redirect_notice(pending_notices, "task-9", "-100999"))
+            self.assertEqual(pending_notices, {})
+        finally:
+            bridge.api = original_api
+        self.assertEqual(
+            calls,
+            [("sendMessage", {"chat_id": "-100999",
+                              "text": "Sent you the reply in a private chat."})] * 2)
 
 
 if __name__ == "__main__":

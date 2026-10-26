@@ -327,6 +327,17 @@ def api(method, **params):
         print(f"API error {e.code}: {body}")
         return {"ok": False}
 
+def _send_redirect_notice(pending_notices, task_id, chat_id):
+    """Post the group redirect notice; keep task_id queued when refused."""
+    notice = api("sendMessage", chat_id=chat_id,
+                 text="Sent you the reply in a private chat.")
+    if (notice or {}).get("ok"):
+        pending_notices.pop(task_id, None)
+        return True
+    pending_notices[task_id] = chat_id
+    return False
+
+
 INBOX_DIR = REPO / "telegram-inbox"
 INBOX_DIR.mkdir(exist_ok=True)
 
@@ -780,6 +791,7 @@ def main():  # pragma: no cover
     offset = None
     allowed = load_allowed()
     pending_replies = {}  # task_id -> chat_id
+    pending_notices = {}  # task_id -> group chat_id owed a redirect notice
 
     heartbeat_file = REPO / "state" / "telegram-bridge.heartbeat"
     last_heartbeat = 0
@@ -1176,6 +1188,9 @@ def main():  # pragma: no cover
         except Exception as e:
             print(f"[Telegram] poll_progress error: {e}", flush=True)
 
+        for _task_id, _chat_id in list(pending_notices.items()):
+            _send_redirect_notice(pending_notices, _task_id, _chat_id)
+
         # Check for results to send back (includes any orphaned-by-restart
         # routing recovered from the task files themselves — see
         # _gather_pending_task_ids for why this must run every tick).
@@ -1272,11 +1287,10 @@ def main():  # pragma: no cover
                     print(f"[Telegram] reply refused, keeping {task_id} for retry", flush=True)
                     continue
                 if destination != origin_chat_id:
-                    try:
-                        api("sendMessage", chat_id=origin_chat_id,
-                            text="Sent you the reply in a private chat.")
-                    except Exception:
-                        pass
+                    # api() returns ok=False on HTTP errors instead of raising, so a
+                    # refused notice stays queued as its own retry entry.
+                    if not _send_redirect_notice(pending_notices, task_id, origin_chat_id):
+                        print(f"[Telegram] group notice for {task_id} refused; kept for retry", flush=True)
                 _clear_progress(task_id)  # remove any progress placeholder + tier tracking
                 # Archive (not delete) so we can mine patterns later.
                 archive_file(result_file, "results", task_id)
