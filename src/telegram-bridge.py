@@ -266,6 +266,18 @@ def _resolve_proactive_owner_id(env_override: str | None, access_data: dict) -> 
     return str(allow_list[0])
 
 
+def _reply_destination(chat_id, parsed, access_data: dict, env_override: str | None):
+    if not any(action.kind == "dm-only" for action in parsed.actions):
+        return chat_id
+    if int(chat_id) > 0:
+        return chat_id
+    owner_id = _resolve_proactive_owner_id(env_override, access_data)
+    return int(owner_id) if owner_id is not None else None
+
+
+_DM_ONLY_UNROUTABLE_LOGGED: set[str] = set()
+
+
 def tofu_onboard(sender_id, username):
     """First-time auto-onboard: write access.json with this sender as owner.
 
@@ -1164,7 +1176,8 @@ def main():  # pragma: no cover
                 reply_text = read_ready_result(result_file)
                 if reply_text is None:
                     continue
-                chat_id = pending_replies.pop(task_id)
+                origin_chat_id = pending_replies.pop(task_id)
+                chat_id = origin_chat_id
                 # Parse markers via the unified module (#873). Telegram
                 # honors [no-send] / [REPLIED] / [deduped: <id>] as skip,
                 # sends attached files, and silently drops [channel:] redirects
@@ -1174,9 +1187,9 @@ def main():  # pragma: no cover
                 if any(a.kind == "skip" for a in parsed.actions):
                     _sk = next(a for a in parsed.actions if a.kind == "skip")
                     if _sk.value == "deduped":
-                        _rq, _disp = _dedup_recover(task_id, _sk.extra, chat_id)
+                        _rq, _disp = _dedup_recover(task_id, _sk.extra, origin_chat_id)
                         if _rq:
-                            pending_replies[_rq] = chat_id
+                            pending_replies[_rq] = origin_chat_id
                         if _disp == "retain":
                             print(f"  [dedup] report not delivered for {task_id} "
                                   f"— keeping for retry", flush=True)
@@ -1187,6 +1200,20 @@ def main():  # pragma: no cover
                     task_file = find_task_file(TASKS_DIR, task_id) or TASKS_DIR / f"{task_id}.txt"
                     archive_file(task_file, "tasks", task_id)
                     continue
+                env_override = (config_get_env_first("SUTANDO_DM_OWNER_ID", "") or "").strip()
+                try:
+                    access_data = json.loads(ACCESS_FILE.read_text())
+                except Exception:
+                    access_data = {}
+                destination = _reply_destination(
+                    origin_chat_id, parsed, access_data, env_override)
+                if destination is None:
+                    pending_replies[task_id] = origin_chat_id
+                    if task_id not in _DM_ONLY_UNROUTABLE_LOGGED:
+                        _DM_ONLY_UNROUTABLE_LOGGED.add(task_id)
+                        print(f"[Telegram] no private destination for {task_id}; keeping for retry", flush=True)
+                    continue
+                chat_id = destination
                 # Bound before the try: a raise below must not leave the archive
                 # gate reading an unassigned name.
                 delivered_ok = False
@@ -1232,10 +1259,15 @@ def main():  # pragma: no cover
                 except Exception as e:
                     print(f"[Telegram] Reply error: {e}", flush=True)
                 if not delivered_ok:
-                    # Restore the route popped above, or a retry has no chat_id.
-                    pending_replies[task_id] = chat_id
+                    pending_replies[task_id] = origin_chat_id
                     print(f"[Telegram] reply refused, keeping {task_id} for retry", flush=True)
                     continue
+                if destination != origin_chat_id:
+                    try:
+                        api("sendMessage", chat_id=origin_chat_id,
+                            text="Sent you the reply in a private chat.")
+                    except Exception:
+                        pass
                 _clear_progress(task_id)  # remove any progress placeholder + tier tracking
                 # Archive (not delete) so we can mine patterns later.
                 archive_file(result_file, "results", task_id)
