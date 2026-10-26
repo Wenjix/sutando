@@ -4323,13 +4323,13 @@ const server = createServer((req, res) => {
 			return;
 		}
 		// Same-origin GET fetch sends no Origin, so it is enforced only when
-		// present; fetch-metadata headers bound requests without one.
+		// present; 'same-site' stays out — another localhost port would embed media.
 		let sameOriginLoopback: boolean;
 		try {
 			const origin = req.headers.origin ? new URL(req.headers.origin) : null;
 			const host = req.headers.host ? new URL(`http://${req.headers.host}`) : null;
 			const fetchSite = String(req.headers['sec-fetch-site'] ?? '');
-			const sameSiteFetch = fetchSite === '' || fetchSite === 'same-origin' || fetchSite === 'same-site' || fetchSite === 'none';
+			const sameSiteFetch = fetchSite === '' || fetchSite === 'same-origin' || fetchSite === 'none';
 			sameOriginLoopback = sameSiteFetch && (origin === null
 				|| (!!host
 					&& (origin.protocol === 'http:' || origin.protocol === 'https:')

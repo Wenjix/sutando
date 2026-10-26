@@ -148,6 +148,9 @@ describe('web-client dashboard API bearer proxy', () => {
 			{ 'Sec-Fetch-Site': 'cross-site' },
 			{ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', Origin: 'null' },
 			{ Origin: `http://localhost:${clientPort}:1` },
+			// Another localhost port embeds owner media with same-site + no Origin.
+			{ 'Sec-Fetch-Site': 'same-site' },
+			{ Origin: 'http://localhost:1', 'Sec-Fetch-Site': 'same-site' },
 		]) {
 			const response = await request(clientPort, '/api/dashboard/tasks/active', headers);
 			assert.equal(response.status, 403, JSON.stringify(headers));
