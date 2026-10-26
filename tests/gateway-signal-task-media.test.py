@@ -259,9 +259,8 @@ class TaskMediaRoute(unittest.TestCase):
         self.assertIn("provenance", posts[0][2]["body"])
 
     def test_missing_task_file_marker_is_withheld_before_the_loop(self):
-        # Production order: the result guard resolves a missing task file to
-        # guest, so the attach marker is withheld for review upstream and the
-        # delivery loop never sees the attachment at all.
+        # Production order: a missing task file resolves to guest upstream, so
+        # the marker is withheld for review before the delivery loop sees it.
         mod = self.mod
         mod.LOCAL_TIER = "team"
         mod._load_tier_map = lambda: {}
