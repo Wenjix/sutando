@@ -236,6 +236,28 @@ class TaskMediaRoute(unittest.TestCase):
         self.assertEqual(self._media_posts(), [])
         self.assertIn("provenance", reason)
 
+    def test_missing_task_file_selects_the_unresolved_confinement_path(self):
+        # Past the marker parser, the delivery loop must map a missing task file
+        # to _CONFINE_UNRESOLVED: the upload is refused and reported in-band.
+        mod = self.mod
+        mod.LOCAL_TIER = "team"
+        mod._load_tier_map = lambda: {}
+        self._allow_this_workspace_results(mod)
+        mod._write_task(self._team_signal_task("task-team-gone"))
+        for f in mod.TASKS_DIR.glob("task-team-gone*"):
+            f.unlink()
+        own = mod.RESULTS_DIR / "task-team-gone"
+        own.mkdir(parents=True, exist_ok=True)
+        (own / "chart.png").write_bytes(b"payload")
+        self._result(mod, "task-team-gone", f"x [file: {own / 'chart.png'}]")
+        with patch.object(mod, "_guarded_result_body",
+                          side_effect=lambda tid, raw: (raw, None)):
+            mod._post_ready_results({"task-team-gone"})
+        self.assertEqual(self._media_posts(), [])
+        posts = self._result_posts()
+        self.assertEqual(len(posts), 1)
+        self.assertIn("provenance", posts[0][2]["body"])
+
     def test_team_dedup_requeue_attaches_from_the_original_tasks_dir(self):
         """A requeue's body is the ORIGINAL body (media instruction naming the
         original's dir) and it answers the ORIGINAL delivery — so that is the dir
