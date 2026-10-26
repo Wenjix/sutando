@@ -11,8 +11,17 @@ obs_hooks_enabled() {
   [ "${SUTANDO_OBS_COLLECTOR:-}" = "1" ]
 }
 
+obs_listener_owned_by_me() {
+  local port="$1" uids current_uid
+  uids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -Fu 2>/dev/null \
+    | sed -n 's/^u//p' | sort -u || true)"
+  current_uid="$(id -u)"
+  [ -n "$uids" ] && [ "$uids" = "$current_uid" ]
+}
+
 obs_collector_healthy() {
   local port="$1" response
+  obs_listener_owned_by_me "$port" || return 2
   response="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null)" || return 1
   case "$response" in
     *'"service":"sutando-observability-collector"'*) return 0 ;;

@@ -823,16 +823,21 @@ if obs_collector_enabled; then
     OBS_COLLECTOR_READY=1
     echo "  ✓ obs collector (verified on $OBS_PORT)"
   else
-    echo "  ⚠ obs collector unavailable or foreign listener on $OBS_PORT — metrics/hook capture disabled" >&2
+    _obs_health_rc=$?
+    if [ "$_obs_health_rc" -eq 2 ]; then
+      echo "  ⚠ obs collector port $OBS_PORT is held by another account's process — metrics/hook capture disabled" >&2
+    else
+      echo "  ⚠ obs collector unavailable or foreign listener on $OBS_PORT — metrics/hook capture disabled" >&2
+    fi
   fi
   if [ "$OBS_COLLECTOR_READY" = "1" ]; then
     # Default-on path is metrics-only. Preserve the old explicit =1 behavior
     # for operators who intentionally opted into prompt/tool hook capture.
     if [ -z "${SUTANDO_OBS_METRICS_ENDPOINT:-}" ]; then
-      export SUTANDO_OBS_METRICS_ENDPOINT="http://localhost:$OBS_PORT"
+      export SUTANDO_OBS_METRICS_ENDPOINT="http://127.0.0.1:$OBS_PORT"
     fi
     if obs_hooks_enabled && [ -z "${SUTANDO_OBS_ENDPOINT:-}" ]; then
-      export SUTANDO_OBS_ENDPOINT="http://localhost:$OBS_PORT"
+      export SUTANDO_OBS_ENDPOINT="http://127.0.0.1:$OBS_PORT"
     fi
   fi
 else
