@@ -417,8 +417,12 @@ class TestGroupAddRemove(_Isolated):
         })
         before = self.access_file.read_text()
         result = self._fail(["group-rm-allow", "ch-9", "member"])
-        self.assertIn("group rm <ch>", result["error"])
-        self.assertIn("group add <ch>", result["error"])
+        self.assertEqual(
+            result["error"],
+            "cannot remove the last channel allowlist member: an empty allowFrom "
+            "admits every channel member; use `group rm ch-9` to close the channel "
+            "or `group add ch-9` to open it to every member",
+        )
         self.assertEqual(self.access_file.read_text(), before)
 
     def test_group_rm_allow_keeps_one_of_two_members(self):

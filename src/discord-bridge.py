@@ -3559,7 +3559,7 @@ async def _handle_discord_message(message, force=False):
                 channel_authorized = True
         else:
             # Channel not configured — fall back to global allowlist
-            if policy == "allowlist" and sender_id not in allowed:
+            if (allowed or policy != "pairing") and sender_id not in allowed:
                 print(f"  [skip] @{username} not in global allowlist", flush=True)
                 if bot_mentioned or role_mentioned:
                     await _ack_not_allowlisted(

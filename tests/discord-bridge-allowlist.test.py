@@ -142,7 +142,10 @@ def main() -> int:
         src,
         re.S,
     )
-    if not unconfigured_gate or 'policy == "allowlist"' not in unconfigured_gate.group(1):
+    if not unconfigured_gate or (
+        '(allowed or policy != "pairing") and sender_id not in allowed'
+        not in unconfigured_gate.group(1)
+    ):
         return fail(
             "unconfigured guild channels must enforce the global allowlist under allowlist policy",
             unconfigured_gate.group(1) if unconfigured_gate else src,

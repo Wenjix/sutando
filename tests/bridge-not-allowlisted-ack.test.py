@@ -386,6 +386,39 @@ def test_discord():
         f"pairing={pairing_requests!r} pending={pairing_doc.get('pending')!r}",
     )
 
+    db.ACCESS_FILE.write_text(json.dumps({
+        "dmPolicy": "pairing", "allowFrom": ["U_OWNER"], "pending": {},
+    }))
+    db.TASKS_DIR = task_root
+    db._not_allowlisted_ack_at.clear()
+    nonempty_pairing_requests = []
+    original_pairing_prompt = db._deliver_pairing_prompt
+
+    async def record_nonempty_pairing_prompt(channel, code, username, sender_id, allowed):
+        nonempty_pairing_requests.append(sender_id)
+        return "test"
+
+    db._deliver_pairing_prompt = record_nonempty_pairing_prompt
+    nonempty_pairing = _FakeChan(559)
+    try:
+        asyncio.run(db._handle_discord_message(
+            _chan_msg("U_PAIRING_NONEMPTY", nonempty_pairing, g)))
+    except Exception:
+        pass
+    finally:
+        db._deliver_pairing_prompt = original_pairing_prompt
+        db.TASKS_DIR = original_tasks_dir
+    nonempty_pairing_doc = json.loads(db.ACCESS_FILE.read_text())
+    check(
+        "discord: pairing with global members keeps strangers on the addressed ack path",
+        len(nonempty_pairing.sent) == 1
+        and not nonempty_pairing_requests
+        and not nonempty_pairing_doc.get("pending")
+        and not list(task_root.glob("task-*.txt")),
+        f"sent={nonempty_pairing.sent!r} pairing={nonempty_pairing_requests!r} "
+        f"pending={nonempty_pairing_doc.get('pending')!r}",
+    )
+
     # send failure is swallowed (covers the except branch)
     class _BoomChan:
         id = 888
