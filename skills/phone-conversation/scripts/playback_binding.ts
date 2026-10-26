@@ -19,3 +19,7 @@ export class PlaybackOwner {
 		return true;
 	}
 }
+
+export function clearActivePlaybackProcess<T>(active: T | null, closing: T): T | null {
+	return active === closing ? null : active;
+}

@@ -63,8 +63,16 @@ import { execSync, execFileSync, spawn, type ChildProcess } from 'node:child_pro
 import { isAllowedAudioPath } from './audio_path_guard.js';
 import { CallRecordStore, classifyCall, normalizePhone } from './call_records.js';
 import { isDirectLoopback, isLoopback } from './loopback_guard.js';
-import { PlaybackOwner } from './playback_binding.js';
-import { isValidMediaStreamUpgrade, isValidTwilioSignature } from './twilio_request_auth.js';
+import { clearActivePlaybackProcess, PlaybackOwner } from './playback_binding.js';
+import { OwnerVisionBinding } from './vision_call_binding.js';
+import {
+	isValidMediaStreamUpgrade,
+	mediaStreamCallSid,
+	mediaStreamStartMatches,
+	mediaStreamUrl,
+	readTwilioBody,
+	twilioWebhookDecision,
+} from './twilio_request_auth.js';
 import { VoiceSession, type ToolDefinition, type MainAgent } from 'bodhi-realtime-agent';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -83,6 +91,7 @@ import { resultBelongsTo, phoneCallKey } from '../../../src/result-channel-key.j
 let _setVisionSession: ((s: unknown) => void) | null = null;
 let _priorVisionSession: unknown = undefined; // snapshot to restore on hang-up
 let visionCallSid: string | null = null;
+const ownerVisionBinding = new OwnerVisionBinding<unknown>(null);
 async function attachVisionToCall(session: unknown): Promise<void> {
 	try {
 		if (!_setVisionSession) {
@@ -835,6 +844,7 @@ async function createCallSession(params: {
 	callSession.voiceSession = session;
 
 	if (callSession.isOwner) {
+		ownerVisionBinding.attach(params.callSid, session);
 		await attachVisionToCall(session);
 		visionCallSid = params.callSid;
 	}
@@ -1028,9 +1038,17 @@ function cleanupCall(callSid: string): void {
 	try { unlinkSync('/tmp/sutando-playback-pause'); } catch {}
 	try { unlinkSync(PLAYBACK_PATH); } catch {}
 
-	if (visionCallSid === callSid) {
-		detachVisionFromCall();
-		visionCallSid = null;
+	if (session.isOwner) {
+		const nextVision = ownerVisionBinding.remove(callSid);
+		if (visionCallSid === callSid) {
+			if (nextVision) {
+				visionCallSid = nextVision.callSid;
+				void attachVisionToCall(nextVision.session);
+			} else {
+				detachVisionFromCall();
+				visionCallSid = null;
+			}
+		}
 	}
 
 	// Close VoiceSession
@@ -1357,17 +1375,25 @@ const server = createServer(async (req, res) => {
 	const path = url.pathname;
 	try {
 		const isTwilioPath = path.startsWith('/twilio/');
-		const twilioBody = isTwilioPath ? await readBody(req) : '';
+		const twilioBodyResult = isTwilioPath ? await readTwilioBody(req) : { body: '', tooLarge: false };
+		const twilioBody = twilioBodyResult.body;
 
-		if (isTwilioPath && !isValidTwilioSignature(
-			TWILIO_AUTH_TOKEN,
-			req.headers['x-twilio-signature'] as string | undefined,
-			WEBHOOK_BASE_URL + (req.url ?? ''),
-			new URLSearchParams(twilioBody),
-		)) {
+		const twilioDecision = isTwilioPath
+			? twilioWebhookDecision(
+				TWILIO_AUTH_TOKEN,
+				req.headers['x-twilio-signature'] as string | undefined,
+				WEBHOOK_BASE_URL + (req.url ?? ''),
+				twilioBody,
+				twilioBodyResult.tooLarge,
+			)
+			: { ok: true as const };
+		if (!twilioDecision.ok) {
+			if (twilioDecision.status === 413) res.setHeader('Connection', 'close');
 			const remote = req.socket.remoteAddress ?? '?';
-			console.log(`${ts()} [Security] REJECTED unsigned Twilio webhook ${path} from ${remote}`);
-			json(res, 403, { error: 'invalid Twilio signature' });
+			if (twilioDecision.status === 403) {
+				console.log(`${ts()} [Security] REJECTED unsigned Twilio webhook ${path} from ${remote}`);
+			}
+			json(res, twilioDecision.status, { error: twilioDecision.error });
 			return;
 		}
 
@@ -1534,7 +1560,7 @@ const server = createServer(async (req, res) => {
 				// Check pause flag — stop streaming if pause requested
 				if (existsSync('/tmp/sutando-playback-pause')) {
 					ffmpegProc.kill('SIGTERM');
-					activePlaybackProc = null;
+					activePlaybackProc = clearActivePlaybackProcess(activePlaybackProc, ffmpegProc);
 					console.log(`${ts()} [PlayAudio] paused via flag`);
 					return;
 				}
@@ -1546,7 +1572,10 @@ const server = createServer(async (req, res) => {
 				}
 				bytesSent += pcmBuf.length;
 			});
-			ffmpegProc.on('close', () => { activePlaybackProc = null; console.log(`${ts()} [PlayAudio] done — ${(bytesSent / 1024).toFixed(0)}KB sent`); });
+			ffmpegProc.on('close', () => {
+				activePlaybackProc = clearActivePlaybackProcess(activePlaybackProc, ffmpegProc);
+				console.log(`${ts()} [PlayAudio] done — ${(bytesSent / 1024).toFixed(0)}KB sent`);
+			});
 			console.log(`${ts()} [PlayAudio] streaming ${body.path} to ${session.callSid}`);
 
 		} else if (path === '/stop-audio' && req.method === 'POST') {
@@ -1702,7 +1731,7 @@ const server = createServer(async (req, res) => {
 			twimlResponse(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://${new URL(WEBHOOK_BASE_URL).host}/media-stream" dtmfDetection="inband">
+    <Stream url="${esc(mediaStreamUrl(WEBHOOK_BASE_URL, callSid))}" dtmfDetection="inband">
       ${params.join('\n      ')}
     </Stream>
   </Connect>
@@ -1733,7 +1762,9 @@ const wss = new WebSocketServer({
 	server,
 	path: '/media-stream',
 	verifyClient: (info: { origin: string; secure: boolean; req: IncomingMessage }) => {
-		const valid = isValidMediaStreamUpgrade(TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL);
+		const valid = isValidMediaStreamUpgrade(
+			TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL, info.req.url ?? '',
+		);
 		if (!valid) {
 			const remote = info.req.socket.remoteAddress ?? '?';
 			console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`);
@@ -1742,9 +1773,10 @@ const wss = new WebSocketServer({
 	},
 });
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
 	console.log(`${ts()} [WS] Twilio Media Stream connected`);
 
+	const signedCallSid = mediaStreamCallSid(request.url ?? '', WEBHOOK_BASE_URL);
 	let callSid = '';
 	let callSession: CallSession | null = null;
 	let mediaEventCount = 0;
@@ -1760,6 +1792,11 @@ wss.on('connection', (ws: WebSocket) => {
 
 				case 'start': {
 					if (callSid) break;
+					if (!mediaStreamStartMatches(signedCallSid, msg.start.callSid)) {
+						console.log(`${ts()} [Security] REJECTED media stream callSid mismatch`);
+						ws.close(1008, 'callSid mismatch');
+						break;
+					}
 					const rec = callRecords.claim(msg.start.callSid);
 					if (!rec) {
 						console.log(`${ts()} [Security] REJECTED media stream for unknown call ${msg.start.callSid}`);
@@ -1872,14 +1909,20 @@ wss.on('connection', (ws: WebSocket) => {
 								const ws2 = callSession.twilioWs;
 								const sid2 = callSession.streamSid;
 								ffmpegProc.stdout.on('data', (pcmBuf: Buffer) => {
-									if (ws2.readyState !== WebSocket.OPEN || existsSync('/tmp/sutando-playback-pause')) { ffmpegProc.kill('SIGTERM'); activePlaybackProc = null; return; }
+									if (ws2.readyState !== WebSocket.OPEN || existsSync('/tmp/sutando-playback-pause')) {
+										ffmpegProc.kill('SIGTERM');
+										activePlaybackProc = clearActivePlaybackProcess(activePlaybackProc, ffmpegProc);
+										return;
+									}
 									const mulawBuf = pcm24kToMulaw8k(pcmBuf);
 									const CHUNK = 160;
 									for (let off = 0; off < mulawBuf.length; off += CHUNK) {
 										ws2.send(JSON.stringify({ event: 'media', streamSid: sid2, media: { payload: mulawBuf.subarray(off, Math.min(off + CHUNK, mulawBuf.length)).toString('base64') } }));
 									}
 								});
-								ffmpegProc.on('close', () => { activePlaybackProc = null; });
+								ffmpegProc.on('close', () => {
+									activePlaybackProc = clearActivePlaybackProcess(activePlaybackProc, ffmpegProc);
+								});
 								// Resume QuickTime video
 								try { execSync(`osascript -e 'tell application "QuickTime Player" to play document 1'`, { timeout: 3_000 }); } catch {}
 								console.log(`${ts()} [DTMF] # → resumed from ${seekSec}s`);

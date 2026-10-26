@@ -52,18 +52,29 @@ describe('Twilio request authentication', () => {
 	});
 
 	it('builds the same media-stream URL as the server TwiML', () => {
-		assert.equal(mediaStreamUrl(BASE), 'wss://phone.example/media-stream');
+		assert.equal(mediaStreamUrl(BASE, 'CA123'), 'wss://phone.example/media-stream?callSid=CA123');
 	});
 
-	it('accepts media-stream signatures over WSS and HTTPS but rejects other hosts and missing inputs', () => {
-		const wsUrl = 'wss://phone.example/media-stream';
-		const httpsUrl = 'https://phone.example/media-stream';
+	it('accepts media-stream signatures over WSS and HTTPS for the signed call URL', () => {
+		const wsUrl = mediaStreamUrl(BASE, 'CA123');
+		const httpsUrl = wsUrl.replace(/^wss:/, 'https:');
 		const headers = (signature: string): IncomingHttpHeaders => ({ 'x-twilio-signature': signature });
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), BASE), true);
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(httpsUrl, new URLSearchParams())), BASE), true);
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign('wss://other.example/media-stream', new URLSearchParams())), BASE), false);
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, {}, BASE), false);
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), ''), false);
-		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), 'not a URL'), false);
+		const requestUrl = '/media-stream?callSid=CA123';
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), BASE, requestUrl), true);
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(httpsUrl, new URLSearchParams())), BASE, requestUrl), true);
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign('wss://other.example/media-stream?callSid=CA123', new URLSearchParams())), BASE, requestUrl), false);
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, {}, BASE, requestUrl), false);
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), '', requestUrl), false);
+		assert.equal(isValidMediaStreamUpgrade(TOKEN, headers(sign(wsUrl, new URLSearchParams())), 'not a URL', requestUrl), false);
+	});
+
+	it('rejects replaying a valid stream signature for a different CallSid', () => {
+		const signedUrl = mediaStreamUrl(BASE, 'CA123');
+		const signature = sign(signedUrl, new URLSearchParams());
+		const headers: IncomingHttpHeaders = { 'x-twilio-signature': signature };
+		assert.equal(
+			isValidMediaStreamUpgrade(TOKEN, headers, BASE, '/media-stream?callSid=CA999'),
+			false,
+		);
 	});
 });

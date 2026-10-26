@@ -69,6 +69,17 @@ describe('loopback_guard.isDirectLoopback', () => {
 		assert.equal(isDirectLoopback(fakeReq('::1', { forwarded: 'for=198.51.100.4' })), false);
 		assert.equal(isDirectLoopback(fakeReq('::1', { 'tailscale-funnel-request': '1' })), false);
 	});
+	it('rejects requests carrying each supported forwarding header', () => {
+		for (const header of [
+			'cf-connecting-ip',
+			'true-client-ip',
+			'x-forwarded-server',
+			'x-original-forwarded-for',
+			'via',
+		]) {
+			assert.equal(isDirectLoopback(fakeReq('127.0.0.1', { [header]: '198.51.100.4' })), false, header);
+		}
+	});
 	it('rejects LAN requests', () => {
 		assert.equal(isDirectLoopback(fakeReq('192.168.1.42')), false);
 	});

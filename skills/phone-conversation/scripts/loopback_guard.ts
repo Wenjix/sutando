@@ -28,6 +28,11 @@ export function isForwarded(req: IncomingMessage): boolean {
 		'forwarded',
 		'x-real-ip',
 		'tailscale-funnel-request',
+		'cf-connecting-ip',
+		'true-client-ip',
+		'x-forwarded-server',
+		'x-original-forwarded-for',
+		'via',
 	].some(header => req.headers[header] !== undefined);
 }
 
