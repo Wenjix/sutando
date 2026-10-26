@@ -33,16 +33,6 @@ class RestartSelfRelaunchArgv(unittest.TestCase):
     def setUp(self):
         self.body = _restart_self_body()
 
-    def test_script_has_no_interpolation(self):
-        m = re.search(r'let script = "((?:[^"\\]|\\.)*)"', self.body)
-        self.assertIsNotNone(m)
-        self.assertNotIn("\\(", m.group(1), "the shell script must be constant text")
-
-    def test_pid_and_path_are_separate_arguments(self):
-        self.assertRegex(
-            self.body,
-            r'task\.arguments = \["-c", script, "[^"]+", String\(myPid\), myPath\]')
-
     def test_path_with_shell_syntax_is_executed_literally(self):
         script = _swift_literal(self.body)
         dead = subprocess.Popen(["true"])

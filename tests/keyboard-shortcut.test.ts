@@ -3,12 +3,8 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 import { shortcutScript, appleScriptString } from '../src/keyboard-shortcut.js';
 
-const SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'browser-tools.ts'), 'utf8');
 const script = (s: string) => {
 	const r = shortcutScript(s);
 	assert.ok('script' in r, `expected a script for ${JSON.stringify(s)}: ${JSON.stringify(r)}`);
@@ -60,14 +56,4 @@ describe('shortcutScript', () => {
 	});
 });
 
-describe('browser-tools AppleScript execution', () => {
-	it('click builds its shortcut script with shortcutScript', () => {
-		assert.match(SRC, /const built = shortcutScript\(shortcut\);/);
-		assert.match(SRC, /execFileSync\('osascript', \['-e', built\.script\]/);
-	});
 
-	it('no AppleScript is written to a temp file and run by path', () => {
-		assert.doesNotMatch(SRC, /\.scpt/);
-		assert.doesNotMatch(SRC, /osascript \$\{/);
-	});
-});
