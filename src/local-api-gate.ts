@@ -1,6 +1,6 @@
 /** TypeScript twin of src/local_api_gate.py. */
 
-import { closeSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { IncomingHttpHeaders } from 'node:http';
@@ -10,15 +10,42 @@ import { resolveWorkspace, statusReadPath } from './workspace_default.js';
 
 export const LOCAL_API_TOKEN_NAME = 'agent-api.token';
 
+function readPublishedToken(path: string): string {
+	const delay = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+	for (let attempt = 0; attempt < 8; attempt++) {
+		try {
+			const value = readFileSync(path, 'utf8').trim();
+			if (value) return value;
+		} catch {}
+		if (attempt < 7) Atomics.wait(delay, 0, 0, 5);
+	}
+	throw new Error('local API token publication did not complete');
+}
+
 export function localApiToken(workspace = resolveWorkspace(), configured = process.env.SUTANDO_API_TOKEN ?? ''): string {
 	if (configured) return configured;
 	const path = statusReadPath(LOCAL_API_TOKEN_NAME, workspace);
+	let emptyFileIdentity: { dev: number; ino: number } | null = null;
 	try {
-		const value = readFileSync(path, 'utf8').trim();
-		if (value) return value;
-		unlinkSync(path);
+		const fd = openSync(path, 'r');
+		try {
+			const value = readFileSync(fd, 'utf8').trim();
+			if (value) return value;
+			const { dev, ino } = fstatSync(fd);
+			emptyFileIdentity = { dev, ino };
+		} finally {
+			closeSync(fd);
+		}
 	} catch {
 		// Mint a token when no readable token exists.
+	}
+	if (emptyFileIdentity) {
+		try {
+			const current = statSync(path);
+			if (current.dev === emptyFileIdentity.dev && current.ino === emptyFileIdentity.ino) unlinkSync(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		}
 	}
 
 	const value = randomBytes(32).toString('base64url');
@@ -30,14 +57,25 @@ export function localApiToken(workspace = resolveWorkspace(), configured = proce
 	} finally {
 		closeSync(fd);
 	}
+	let linkError: unknown;
 	try {
 		linkSync(temp, path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+		linkError = error;
 	} finally {
 		try { unlinkSync(temp); } catch {}
 	}
-	return readFileSync(path, 'utf8').trim();
+	if (linkError) {
+		let collision = (linkError as NodeJS.ErrnoException).code === 'EEXIST';
+		if (!collision) {
+			try {
+				statSync(path);
+				collision = true;
+			} catch {}
+		}
+		if (!collision) throw linkError;
+	}
+	return readPublishedToken(path);
 }
 
 export function bearerMatches(authorization: string | string[] | undefined, expected: string): boolean {

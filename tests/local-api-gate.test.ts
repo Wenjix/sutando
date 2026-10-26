@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -73,6 +73,64 @@ describe('local API token parity', () => {
 			})));
 			assert.ok(tokens.every(token => token === tokens[0]));
 			assert.equal(readFileSync(join(ws, 'state', 'agent-api.token'), 'utf8'), `${tokens[0]}\n`);
+		} finally {
+			rmSync(ws, { recursive: true, force: true });
+		}
+	});
+
+	it('overlapping TypeScript and Python repairs preserve the published token', async () => {
+		const ws = workspace();
+		const state = join(ws, 'state');
+		const readyDir = join(ws, 'ready');
+		const goFile = join(ws, 'go');
+		const tokenPath = join(state, 'agent-api.token');
+		const moduleUrl = new URL('../src/local-api-gate.ts', import.meta.url).href;
+		const tsScript = [
+			`import { localApiToken } from ${JSON.stringify(moduleUrl)};`,
+			"import { existsSync, writeFileSync } from 'node:fs';",
+			'const [ws, ready, go] = process.argv.slice(1);',
+			'writeFileSync(ready, "ready");',
+			'while (!existsSync(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);',
+			"process.stdout.write(localApiToken(ws, ''));",
+		].join('\n');
+		const pyScript = [
+			'import sys, time',
+			'from pathlib import Path',
+			"sys.path.insert(0, 'src')",
+			'from local_api_gate import local_api_token',
+			'ws, ready, go = sys.argv[1:]',
+			"Path(ready).write_text('ready')",
+			'while not Path(go).exists(): time.sleep(0.001)',
+			"print(local_api_token(Path(ws)), end='')",
+		].join('\n');
+		try {
+			mkdirSync(state, { recursive: true });
+			mkdirSync(readyDir);
+			writeFileSync(tokenPath, '\n');
+			const workers = Array.from({ length: 8 }, (_, index) => new Promise<string>((resolve, reject) => {
+				const nodeWorker = index < 4;
+				const ready = join(readyDir, `worker-${index}`);
+				const command = nodeWorker ? process.execPath : 'python3';
+				const args = nodeWorker
+					? ['--import', 'tsx', '--input-type=module', '-e', tsScript, ws, ready, goFile]
+					: ['-c', pyScript, ws, ready, goFile];
+				const child = spawn(command, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+				let output = '';
+				let error = '';
+				child.stdout.on('data', chunk => { output += String(chunk); });
+				child.stderr.on('data', chunk => { error += String(chunk); });
+				child.once('error', reject);
+				child.once('close', code => code === 0 ? resolve(output) : reject(new Error(error)));
+			}));
+			for (let attempt = 0; attempt < 300 && readdirSync(readyDir).length < 8; attempt++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			assert.equal(readdirSync(readyDir).length, 8, 'all workers must reach the overlap barrier');
+			writeFileSync(goFile, 'go');
+			const tokens = await Promise.all(workers);
+			assert.ok(tokens[0]);
+			assert.ok(tokens.every(token => token === tokens[0]));
+			assert.equal(readFileSync(tokenPath, 'utf8'), `${tokens[0]}\n`);
 		} finally {
 			rmSync(ws, { recursive: true, force: true });
 		}
