@@ -18,6 +18,11 @@ _WORKSPACE_TMP = tempfile.mkdtemp(prefix="sutando-telegram-dm-only-test-")
 os.environ["SUTANDO_WORKSPACE"] = _WORKSPACE_TMP
 os.environ["SUTANDO_TEST_MODE"] = "1"
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token-not-real")
+_CONFIG_TMP = tempfile.mkdtemp(prefix="sutando-telegram-dm-only-config-")
+os.environ["CLAUDE_CONFIG_DIR"] = _CONFIG_TMP
+_TELEGRAM_CONFIG = Path(_CONFIG_TMP) / "channels" / "telegram"
+_TELEGRAM_CONFIG.mkdir(parents=True, exist_ok=True)
+(_TELEGRAM_CONFIG / "access.json").write_text('{"allowFrom": []}', encoding="utf-8")
 
 spec = importlib.util.spec_from_file_location(
     "tbridge_dm_only", REPO / "src" / "telegram-bridge.py")

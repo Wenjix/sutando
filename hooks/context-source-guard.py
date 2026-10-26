@@ -30,9 +30,11 @@ import sys
 import json
 import os
 import re
-import shlex
 import time
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _shell_scan  # noqa: E402  (sibling module; path set above)
 
 # Resolve the Claude config dir via $CLAUDE_CONFIG_DIR (set by Claude Code),
 # matching read_discord_channel.py/discord-bridge's claude_home_path — NOT a
@@ -97,40 +99,34 @@ _READER_FLAG_OPTIONS = {
 
 def _reader_cli_targets(cmd):
     try:
-        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
+        segments = _shell_scan.segments(cmd)
     except Exception:
         if re.search(r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
             return True, [], True
         return False, [], False
-    separators = {"&&", "||", ";", "|", "&"}
-    indexes = []
-    segment_start = 0
-    for i, token in enumerate(tokens):
-        if token in separators:
-            segment_start = i + 1
-            continue
-        if os.path.basename(token) not in _READER_VALUE_OPTIONS:
-            continue
-        is_invocation = i == segment_start or any(
-            os.path.basename(previous).startswith("python")
-            for previous in tokens[segment_start:i]
-        )
-        if is_invocation:
-            indexes.append(i)
-    if not indexes:
+    token_segments = [[word.text for word in segment] for segment in segments]
+    if not token_segments and re.search(
+            r"(?:^|[/\s])(?:discord-read|read_discord_channel)\.py(?:\s|$)", cmd):
+        return True, [], True
+    invocations = []
+    for tokens in token_segments:
+        for i, token in enumerate(tokens):
+            if os.path.basename(token) not in _READER_VALUE_OPTIONS:
+                continue
+            is_invocation = i == 0 or any(
+                os.path.basename(previous).startswith("python")
+                for previous in tokens[:i]
+            )
+            if is_invocation:
+                invocations.append((tokens, i))
+    if not invocations:
         return False, [], False
     targets = []
-    for index in indexes:
+    for tokens, index in invocations:
         script = os.path.basename(tokens[index])
         value_options = _READER_VALUE_OPTIONS[script]
         flag_options = _READER_FLAG_OPTIONS[script]
-        args = []
-        for token in tokens[index + 1:]:
-            if token in separators:
-                break
-            args.append(token)
+        args = tokens[index + 1:]
         positional = []
         i = 0
         target_option = "--target" if script == "read_discord_channel.py" else None
