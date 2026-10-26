@@ -50,9 +50,8 @@ def base_touched_since(repo_dir: str, base_ref: str, since: str,
         capture_output=True, text=True)
     if shas.returncode != 0:
         raise SystemExit(f"git log failed: {shas.stderr.strip()[:200]}")
-    # diff-tree per commit emits only NUL-separated names — no separator lines —
-    # so a filename containing a newline stays verbatim instead of being split
-    # or glued to a commit separator.
+    # diff-tree per commit emits only NUL-separated names, so a filename
+    # containing a newline stays verbatim instead of splitting or gluing.
     moved: set[str] = set()
     for sha in shas.stdout.splitlines():
         if not sha:
