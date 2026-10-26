@@ -2084,6 +2084,13 @@ rollback_main() {
     # state/migration-backup-*.tar.* files (they're outside the tar).
     # Empty backup (0-byte) means dest was empty at backup time; skip extract +
     # rely solely on the cleanup walk below to restore to empty state.
+    # Resolve the interpreter BEFORE extracting: a half-restored tree with no
+    # cleanup pass is worse than a rollback that never started.
+    local rb_py; rb_py="$(resolve_python "$REPO_DIR")"
+    if [ -z "$rb_py" ]; then
+        echo "rollback: no usable python interpreter" >&2
+        exit 1
+    fi
     # Auto-detect gz vs not — tar -xf works on both gzipped and plain tarballs
     # on both BSD and GNU implementations (uses magic-byte detection).
     if [ -s "$backup_path" ]; then
@@ -2096,7 +2103,7 @@ rollback_main() {
     fi
     # Remove surface files the backup does not hold. Names stay whole (a newline
     # is part of one name) and nothing resolving outside the dest is unlinked.
-    python3 - "$DEST_REAL" "$backup_path" "${WORKSPACE_SURFACE_DIRS[@]}" "${WORKSPACE_SURFACE_FILES[@]}" <<'PY' || exit 1
+    "$rb_py" - "$DEST_REAL" "$backup_path" "${WORKSPACE_SURFACE_DIRS[@]}" "${WORKSPACE_SURFACE_FILES[@]}" <<'PY' || exit 1
 import os, stat, sys, tarfile
 
 dest, backup, *surface = sys.argv[1:]
@@ -2178,7 +2185,9 @@ emit_json() {
     # machine-readable JSON dump for downstream tooling (dashboards, skill
     # wrappers, the eventual --commit dry-run UI). Python3 is the bash-friendly
     # path — sutando already requires it.
-    python3 - "$DEST_REAL" "$A_REAL_OK" "$B_REAL_OK" "$C_REAL_OK" "$XSRC_INDEX" <<'PY'
+    local ej_py; ej_py="$(resolve_python "$REPO_DIR")"
+    [ -n "$ej_py" ] || { echo "emit-json: no usable python interpreter" >&2; return 1; }
+    "$ej_py" - "$DEST_REAL" "$A_REAL_OK" "$B_REAL_OK" "$C_REAL_OK" "$XSRC_INDEX" <<'PY'
 import json, sys, os
 from collections import defaultdict
 dest, a, b, c, idx_path = sys.argv[1:6]
