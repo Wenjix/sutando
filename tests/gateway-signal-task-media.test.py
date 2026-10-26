@@ -258,6 +258,27 @@ class TaskMediaRoute(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         self.assertIn("provenance", posts[0][2]["body"])
 
+    def test_missing_task_file_marker_is_withheld_before_the_loop(self):
+        # Production order: the result guard resolves a missing task file to
+        # guest, so the attach marker is withheld for review upstream and the
+        # delivery loop never sees the attachment at all.
+        mod = self.mod
+        mod.LOCAL_TIER = "team"
+        mod._load_tier_map = lambda: {}
+        self._allow_this_workspace_results(mod)
+        mod._write_task(self._team_signal_task("task-team-gone2"))
+        for f in mod.TASKS_DIR.glob("task-team-gone2*"):
+            f.unlink()
+        own = mod.RESULTS_DIR / "task-team-gone2"
+        own.mkdir(parents=True, exist_ok=True)
+        (own / "chart.png").write_bytes(b"payload")
+        self._result(mod, "task-team-gone2", f"x [file: {own / 'chart.png'}]")
+        mod._post_ready_results({"task-team-gone2"})
+        self.assertEqual(self._media_posts(), [])
+        self.assertEqual(self._result_posts(), [])
+        # Left for retry, not delivered — the withheld marker is intact.
+        self.assertIn("[file:", (mod.RESULTS_DIR / "task-team-gone2.txt").read_text())
+
     def test_team_dedup_requeue_attaches_from_the_original_tasks_dir(self):
         """A requeue's body is the ORIGINAL body (media instruction naming the
         original's dir) and it answers the ORIGINAL delivery — so that is the dir
