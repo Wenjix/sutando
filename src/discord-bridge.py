@@ -5108,6 +5108,28 @@ async def poll_results():
                     if reply_to_id is None:
                         reply_to_id = source_message_anchor
 
+                    # [dm-only] delivers to the owner's DM; unroutable releases
+                    # the claim for retry rather than post to the source.
+                    try:
+                        _dm_access = json.loads(ACCESS_FILE.read_text())
+                    except Exception:
+                        _dm_access = {}
+                    _dm_reroute, _dm_owner = discord_config.dm_only_route(
+                        _parsed.actions, isinstance(channel, discord.DMChannel), _dm_access)
+                    if _dm_reroute:
+                        _dm_target = None
+                        if _dm_owner is not None:
+                            try:
+                                _dm_target = await (await client.fetch_user(int(_dm_owner))).create_dm()
+                            except Exception as e:
+                                print(f"  [dm-only] owner DM resolution failed for {task_id}: {e}", flush=True)
+                        if _dm_target is None:
+                            _drd.failed(RESULTS_DIR, _send_tok)
+                            print(f"  [dm-only] no owner DM for {task_id} — kept for retry", flush=True)
+                            continue
+                        channel = _dm_target
+                        reply_to_id = None
+
                     # Extract optional [channel: <channel_id>] redirect — the
                     # agent can route a DM-originated reply to a different
                     # channel (e.g. respond from a DM task by posting in
