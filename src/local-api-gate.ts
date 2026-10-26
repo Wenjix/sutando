@@ -1,6 +1,6 @@
 /** TypeScript twin of src/local_api_gate.py. */
 
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { IncomingHttpHeaders } from 'node:http';
@@ -16,6 +16,7 @@ export function localApiToken(workspace = resolveWorkspace(), configured = proce
 	try {
 		const value = readFileSync(path, 'utf8').trim();
 		if (value) return value;
+		unlinkSync(path);
 	} catch {
 		// Mint a token when no readable token exists.
 	}
@@ -30,17 +31,13 @@ export function localApiToken(workspace = resolveWorkspace(), configured = proce
 		closeSync(fd);
 	}
 	try {
-		renameSync(temp, path);
+		linkSync(temp, path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	} finally {
 		try { unlinkSync(temp); } catch {}
 	}
-	try {
-		const winner = readFileSync(path, 'utf8').trim();
-		if (winner) return winner;
-	} catch {
-		// Keep the just-minted value if a concurrent writer removed the file.
-	}
-	return value;
+	return readFileSync(path, 'utf8').trim();
 }
 
 export function bearerMatches(authorization: string | string[] | undefined, expected: string): boolean {
@@ -65,10 +62,47 @@ function loopbackHostname(hostname: string): boolean {
 export function isLoopbackOrigin(origin: string | undefined): boolean {
 	if (!origin) return false;
 	try {
-		return loopbackHostname(new URL(origin).hostname);
+		const parsed = new URL(origin);
+		return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+			&& loopbackHostname(parsed.hostname);
 	} catch {
 		return false;
 	}
+}
+
+const FORWARDED_HEADERS = [
+	'x-forwarded-for',
+	'x-forwarded-host',
+	'x-forwarded-proto',
+	'forwarded',
+	'x-real-ip',
+	'tailscale-funnel-request',
+	'cf-connecting-ip',
+	'true-client-ip',
+	'x-forwarded-server',
+	'x-original-forwarded-for',
+	'via',
+] as const;
+
+export function directLoopbackBearerRouteAllowed(
+	remoteAddress: string | undefined,
+	host: string | undefined,
+	origin: string | undefined,
+	headers: IncomingHttpHeaders,
+): boolean {
+	const target = host ? hostNameFromHeader(host) : null;
+	const address = (remoteAddress ?? '').toLowerCase();
+	if (!(address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1')) return false;
+	if (!target || !loopbackHostname(target.hostname) || !origin) return false;
+	try {
+		const parsedOrigin = new URL(origin);
+		if ((parsedOrigin.protocol !== 'http:' && parsedOrigin.protocol !== 'https:')
+			|| parsedOrigin.host.toLowerCase() !== target.authority
+			|| !loopbackHostname(parsedOrigin.hostname)) return false;
+	} catch {
+		return false;
+	}
+	return !FORWARDED_HEADERS.some(header => headers[header] !== undefined);
 }
 
 function hostNameFromHeader(host: string): { hostname: string; authority: string } | null {

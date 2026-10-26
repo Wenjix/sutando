@@ -166,8 +166,16 @@ describe('web-client local vision and voice token routes', () => {
 			assert.equal(controllerRequests.length, 1);
 			assert.equal(controllerRequests[0].headers.authorization, `Bearer ${TOKEN}`);
 
-			const tokenResponse = await sendRequest(clientPort, '/voice-ws-token', 'GET', {
+			const forwardedTokenResponse = await sendRequest(clientPort, '/voice-ws-token', 'POST', {
 				host: `localhost:${clientPort}`,
+				origin: `http://localhost:${clientPort}`,
+				'cf-connecting-ip': '198.51.100.4',
+			});
+			assert.equal(forwardedTokenResponse.status, 403);
+
+			const tokenResponse = await sendRequest(clientPort, '/voice-ws-token', 'POST', {
+				host: `localhost:${clientPort}`,
+				origin: `http://localhost:${clientPort}`,
 			});
 			assert.equal(tokenResponse.status, 200);
 			assert.equal(tokenResponse.headers['cache-control'], 'no-store');
@@ -198,10 +206,16 @@ describe('web-client local vision and voice token routes', () => {
 			socket.close();
 			await Promise.race([socketClosed, delay(2_000)]);
 
-			const hostileHost = await sendRequest(clientPort, '/voice-ws-token', 'GET', {
+			const hostileHost = await sendRequest(clientPort, '/voice-ws-token', 'POST', {
 				host: `evil.example:${clientPort}`,
+				origin: `http://evil.example:${clientPort}`,
 			});
 			assert.equal(hostileHost.status, 403);
+
+			const missingOrigin = await sendRequest(clientPort, '/voice-ws-token', 'POST', {
+				host: `localhost:${clientPort}`,
+			});
+			assert.equal(missingOrigin.status, 403);
 		} finally {
 			await stopChild(child);
 			for (const socket of voiceSockets) socket.destroy();

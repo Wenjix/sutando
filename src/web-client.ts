@@ -19,7 +19,7 @@ import { CHAT_HTML } from './chat-ui.js';
 import { OVERLAY_MANAGER_HTML } from './overlay-manager-ui.js';
 import { resolveWorkspace, statusReadPath } from './workspace_default.js';
 import { readBodyCapped } from './http-body-limit.js';
-import { browserRequestAllowed, localApiToken } from './local-api-gate.js';
+import { browserRequestAllowed, directLoopbackBearerRouteAllowed, localApiToken } from './local-api-gate.js';
 
 const HTTP_PORT = Number(process.env.CLIENT_PORT) || 8080;
 const HTTP_HOST = process.env.CLIENT_HOST || '0.0.0.0'; // '0.0.0.0' binds to all interfaces for EC2
@@ -2079,6 +2079,31 @@ function stopSpeakingDetection() {
 // src/web-voice-transport.ts served at /web-voice-transport.js). The page
 // supplies callbacks for its surface concerns and keeps reconnect policy.
 
+var cachedVoiceWsToken = null;
+var voiceWsTokenFetch = null;
+function refreshVoiceWsToken() {
+  if (voiceWsTokenFetch) return voiceWsTokenFetch;
+  voiceWsTokenFetch = fetch('/voice-ws-token', { method: 'POST', cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('voice token unavailable');
+      return r.json();
+    })
+    .then(function (data) {
+      cachedVoiceWsToken = data && typeof data.token === 'string' && data.token ? data.token : null;
+      return cachedVoiceWsToken;
+    })
+    .catch(function () {
+      cachedVoiceWsToken = null;
+      return null;
+    })
+    .then(function (token) {
+      voiceWsTokenFetch = null;
+      return token;
+    });
+  return voiceWsTokenFetch;
+}
+refreshVoiceWsToken();
+
 function connectWs() {
   const url = _voiceUrlOverride || $('wsUrl').value.trim();
   _voiceUrlOverride = null;
@@ -2131,13 +2156,19 @@ function connectWs() {
     const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname.endsWith('.localhost');
     if (loopback && target.pathname !== '/ws') {
-      fetch('/voice-ws-token', { cache: 'no-store' }).then(function (r) {
-        if (!r.ok) throw new Error('voice token unavailable');
-        return r.json();
-      }).then(function (data) {
-        if (data && typeof data.token === 'string' && data.token) target.searchParams.set('access_token', data.token);
+      if (cachedVoiceWsToken) {
+        target.searchParams.set('access_token', cachedVoiceWsToken);
         connectTo(target.toString());
-      }).catch(function () { connectTo(url); });
+      } else {
+        refreshVoiceWsToken().then(function (token) {
+          if (token) {
+            target.searchParams.set('access_token', token);
+            connectTo(target.toString());
+          } else {
+            connectTo(url);
+          }
+        });
+      }
       return;
     }
   } catch {}
@@ -2156,6 +2187,7 @@ function resetTurnTranscriptState() {
 }
 
 function onVoiceStatus(status, detail, close) {
+  if (status === 'error' && /401|unauthori[sz]ed/i.test(String(detail || ''))) refreshVoiceWsToken();
   if (status === 'connecting') {
     setStatus(detail || 'Connecting...', '');
     return;
@@ -2186,6 +2218,7 @@ function onVoiceStatus(status, detail, close) {
     return;
   }
   if (status === 'closed') {
+    if (close && (close.code === 4401 || close.code === 401)) refreshVoiceWsToken();
     // Server-initiated clean close (goodbye code 4000) or user clicked Disconnect
     const wasCleanDisconnect = !connected || (close && close.code === 4000);
     // Always reset connected here so subsequent toggle calls (from auto-
@@ -2230,6 +2263,7 @@ function showVoiceTroubleshooting(lead) {
 // 'error' status and suppressed its own close, so the page resets its UI here
 // — fail fast with actionable copy instead of the eternal reconnect spinner.
 function onVoiceConnectFailure(f) {
+  if (f.kind === 'not-authorized' || /401|unauthori[sz]ed/i.test(String(f.detail || ''))) refreshVoiceWsToken();
   dbg('Voice connect failure: ' + f.kind + ' — ' + f.detail, 'err');
   doCleanup({ keepStatus: true });
   if (f.kind === 'mic-permission' || f.kind === 'mic-device' || f.kind === 'mic-other') {
@@ -4278,18 +4312,6 @@ function isLoopbackAddress(address: string | undefined): boolean {
 	return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
-function isVoiceTokenHost(host: string | undefined): boolean {
-	if (!host) return false;
-	try {
-		const parsed = new URL(`http://${host}`);
-		if (parsed.username || parsed.password || parsed.pathname !== '/') return false;
-		const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-		return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-	} catch {
-		return false;
-	}
-}
-
 /** /voice-tasks/view: the task table on one page, refreshed every second from /voice-tasks. */
 const VOICE_TASKS_VIEW_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -4326,8 +4348,10 @@ tick();setInterval(tick,1000);
 const server = createServer((req, res) => {
 	const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
-	if (url.pathname === '/voice-ws-token' && req.method === 'GET') {
-		if (!isLoopbackAddress(req.socket.remoteAddress) || !isVoiceTokenHost(req.headers.host)) {
+	if (url.pathname === '/voice-ws-token' && req.method === 'POST') {
+		if (!directLoopbackBearerRouteAllowed(
+			req.socket.remoteAddress, req.headers.host, req.headers.origin, req.headers,
+		)) {
 			res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'forbidden' }));
 			return;

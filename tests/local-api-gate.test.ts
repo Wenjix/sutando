@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { describe, it } from 'node:test';
 import {
 	browserRequestAllowed,
 	bearerMatches,
+	directLoopbackBearerRouteAllowed,
 	isLoopbackOrigin,
 	localApiToken,
 } from '../src/local-api-gate.ts';
@@ -53,6 +54,29 @@ describe('local API token parity', () => {
 			rmSync(ws, { recursive: true, force: true });
 		}
 	});
+
+	it('concurrent first-use publishers all return the hard-link winner', async () => {
+		const ws = workspace();
+		const moduleUrl = new URL('../src/local-api-gate.ts', import.meta.url).href;
+		const script = `import { localApiToken } from ${JSON.stringify(moduleUrl)}; process.stdout.write(localApiToken(process.argv[1], ''));`;
+		try {
+			const tokens = await Promise.all(Array.from({ length: 8 }, () => new Promise<string>((resolve, reject) => {
+				const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, ws], {
+					stdio: ['ignore', 'pipe', 'pipe'],
+				});
+				let output = '';
+				let error = '';
+				child.stdout.on('data', chunk => { output += String(chunk); });
+				child.stderr.on('data', chunk => { error += String(chunk); });
+				child.once('error', reject);
+				child.once('close', code => code === 0 ? resolve(output) : reject(new Error(error)));
+			})));
+			assert.ok(tokens.every(token => token === tokens[0]));
+			assert.equal(readFileSync(join(ws, 'state', 'agent-api.token'), 'utf8'), `${tokens[0]}\n`);
+		} finally {
+			rmSync(ws, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('bearerMatches', () => {
@@ -91,5 +115,29 @@ describe('browser request origin policy', () => {
 		for (const origin of ['https://localhost.evil.example', 'not an origin']) {
 			assert.equal(isLoopbackOrigin(origin), false, origin);
 		}
+	});
+
+	it('restricts bearer routes to direct same-origin loopback requests', () => {
+		const allowed = directLoopbackBearerRouteAllowed(
+			'127.0.0.1', 'localhost:8080', 'http://localhost:8080', { host: 'localhost:8080' },
+		);
+		assert.equal(allowed, true);
+		for (const headers of [
+			{ host: 'localhost:8080', 'cf-connecting-ip': '198.51.100.4' },
+			{ host: 'localhost:8080', 'x-original-forwarded-for': '198.51.100.4' },
+		]) {
+			assert.equal(directLoopbackBearerRouteAllowed(
+				'127.0.0.1', 'localhost:8080', 'http://localhost:8080', headers,
+			), false);
+		}
+		assert.equal(directLoopbackBearerRouteAllowed(
+			'127.0.0.1', 'localhost:8080', undefined, { host: 'localhost:8080' },
+		), false);
+		assert.equal(directLoopbackBearerRouteAllowed(
+			'127.0.0.1', 'localhost:8080', 'http://127.0.0.1:9999', { host: 'localhost:8080' },
+		), false);
+		assert.equal(directLoopbackBearerRouteAllowed(
+			'203.0.113.5', 'localhost:8080', 'http://localhost:8080', { host: 'localhost:8080' },
+		), false);
 	});
 });

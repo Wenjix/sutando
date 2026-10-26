@@ -109,6 +109,7 @@ def local_api_token(workspace: Path, configured: str = "") -> str:
         value = path.read_text(encoding="utf-8").strip()
         if value:
             return value
+        path.unlink()
     except OSError:
         pass
     value = secrets.token_urlsafe(32)
@@ -118,13 +119,16 @@ def local_api_token(workspace: Path, configured: str = "") -> str:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(value + "\n")
-        os.replace(tmp, path)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
     finally:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
-    return value
+    return path.read_text(encoding="utf-8").strip()
 
 
 def bearer_matches(authorization: str, expected: str) -> bool:

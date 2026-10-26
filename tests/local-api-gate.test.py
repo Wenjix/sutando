@@ -17,6 +17,7 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,6 +50,13 @@ class Token(unittest.TestCase):
         path.parent.mkdir(parents=True)
         path.write_text("\n")
         self.assertTrue(G.local_api_token(self.ws))
+
+    def test_concurrent_first_use_returns_the_published_token(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            tokens = list(pool.map(lambda _: G.local_api_token(self.ws), range(16)))
+        self.assertTrue(tokens[0])
+        self.assertEqual(set(tokens), {tokens[0]})
+        self.assertEqual((self.ws / "state" / G.LOCAL_API_TOKEN_NAME).read_text(), tokens[0] + "\n")
 
     def test_bearer_compare(self):
         self.assertTrue(G.bearer_matches("Bearer abc", "abc"))
