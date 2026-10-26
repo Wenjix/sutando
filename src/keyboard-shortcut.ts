@@ -1,10 +1,5 @@
-/**
- * Build the System Events script for a "cmd+shift+5"-style shortcut.
- *
- * Only known modifiers and keys are accepted; a character key is embedded as
- * AppleScript string data, so the shortcut can never change the script's
- * structure. Dependency-free so it stays testable without the agent SDK.
- */
+/** Build a System Events script for a "cmd+shift+5"-style shortcut.
+ *  Only known modifiers/keys are accepted, so input can't alter the script's structure. */
 
 const MODIFIERS: Record<string, string> = {
 	cmd: 'command down', command: 'command down',

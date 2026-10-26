@@ -1,7 +1,5 @@
-/**
- * The click tool's shortcut becomes a fixed System Events script: only known
- * modifiers and keys are accepted, and a character key is AppleScript string data.
- */
+/** The click tool's shortcut becomes a fixed System Events script:
+ *  only known modifiers/keys are accepted, text keys stay string data. */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
