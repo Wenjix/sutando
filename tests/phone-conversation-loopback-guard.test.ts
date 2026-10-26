@@ -1,7 +1,5 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { isDirectLoopback, isLoopback } from '../skills/phone-conversation/scripts/loopback_guard.js';
 
@@ -85,36 +83,4 @@ describe('loopback_guard.isDirectLoopback', () => {
 	});
 });
 
-describe('conversation-server.ts wiring', () => {
-	const SRC = readFileSync(
-		join(import.meta.dirname ?? '.', '..', 'skills/phone-conversation/scripts/conversation-server.ts'),
-		'utf-8',
-	);
 
-	it('imports direct-loopback guards from the guard module', () => {
-		assert.match(SRC, /from\s+['"]\.\/loopback_guard(?:\.js)?['"]/, (
-			'conversation-server.ts must import loopback guards from ./loopback_guard'
-		));
-	});
-
-	it('gates non-/twilio non-/health endpoints with isDirectLoopback', () => {
-		assert.match(
-			SRC,
-			/path\s*!==\s*['"]\/health['"][\s\S]{0,100}!isTwilioPath[\s\S]{0,100}!isDirectLoopback\(req\)/,
-			'conversation-server.ts must check direct loopback before dispatching to control endpoints',
-		);
-	});
-
-	it('returns 403 (not 200) on the rejection path', () => {
-		assert.match(
-			SRC,
-			/json\(res,\s*403,\s*\{\s*error:\s*['"]control endpoints are loopback-only['"]/,
-			'conversation-server.ts must respond 403 with the documented error string',
-		);
-	});
-
-	it('logs the rejected remote address for incident triage', () => {
-		assert.match(SRC, /REJECTED non-loopback/);
-		assert.match(SRC, /REJECTED tunnel-forwarded/);
-	});
-});

@@ -67,8 +67,7 @@ import { clearActivePlaybackProcess, PlaybackOwner } from './playback_binding.js
 import { OwnerVisionBinding } from './vision_call_binding.js';
 import {
 	isValidMediaStreamUpgrade,
-	mediaStreamCallSid,
-	mediaStreamStartMatches,
+	mediaStreamStartCallSid,
 	mediaStreamUrl,
 	readTwilioBody,
 	twilioWebhookDecision,
@@ -1717,7 +1716,8 @@ const server = createServer(async (req, res) => {
 			});
 			console.log(`${ts()} [Connect] purpose=${purpose} from=${callerNumber} stirVerstat=${stirVerstat} callSid=${callSid}`);
 
-			const params = [`<Parameter name="purpose" value="${esc(purpose)}" />`];
+			const params = [`<Parameter name="callSid" value="${esc(callSid)}" />`,
+				`<Parameter name="purpose" value="${esc(purpose)}" />`];
 			if (callerNumber) params.push(`<Parameter name="callerNumber" value="${esc(callerNumber)}" />`);
 			if (stirVerstat) params.push(`<Parameter name="stirVerstat" value="${esc(stirVerstat)}" />`);
 			if (isMeeting) {
@@ -1731,7 +1731,7 @@ const server = createServer(async (req, res) => {
 			twimlResponse(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${esc(mediaStreamUrl(WEBHOOK_BASE_URL, callSid))}" dtmfDetection="inband">
+    <Stream url="${esc(mediaStreamUrl(WEBHOOK_BASE_URL))}" dtmfDetection="inband">
       ${params.join('\n      ')}
     </Stream>
   </Connect>
@@ -1763,7 +1763,7 @@ const wss = new WebSocketServer({
 	path: '/media-stream',
 	verifyClient: (info: { origin: string; secure: boolean; req: IncomingMessage }) => {
 		const valid = isValidMediaStreamUpgrade(
-			TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL, info.req.url ?? '',
+			TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL,
 		);
 		if (!valid) {
 			const remote = info.req.socket.remoteAddress ?? '?';
@@ -1773,10 +1773,9 @@ const wss = new WebSocketServer({
 	},
 });
 
-wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
+wss.on('connection', (ws: WebSocket) => {
 	console.log(`${ts()} [WS] Twilio Media Stream connected`);
 
-	const signedCallSid = mediaStreamCallSid(request.url ?? '', WEBHOOK_BASE_URL);
 	let callSid = '';
 	let callSession: CallSession | null = null;
 	let mediaEventCount = 0;
@@ -1792,12 +1791,13 @@ wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
 
 				case 'start': {
 					if (callSid) break;
-					if (!mediaStreamStartMatches(signedCallSid, msg.start.callSid)) {
+					const boundCallSid = mediaStreamStartCallSid(msg.start);
+					if (boundCallSid === null) {
 						console.log(`${ts()} [Security] REJECTED media stream callSid mismatch`);
 						ws.close(1008, 'callSid mismatch');
 						break;
 					}
-					const rec = callRecords.claim(msg.start.callSid);
+					const rec = callRecords.claim(boundCallSid);
 					if (!rec) {
 						console.log(`${ts()} [Security] REJECTED media stream for unknown call ${msg.start.callSid}`);
 						ws.close(1008, 'unknown call');

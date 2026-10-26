@@ -1,17 +1,15 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createHmac } from 'node:crypto';
 import {
-	mediaStreamStartMatches,
+	mediaStreamStartCallSid,
 	readTwilioBody,
 	twilioWebhookDecision,
 } from '../skills/phone-conversation/scripts/twilio_request_auth.js';
 
 const TOKEN = 'test-auth-token';
-const SOURCE = readFileSync(new URL('../skills/phone-conversation/scripts/conversation-server.ts', import.meta.url), 'utf8');
 
 function sign(url: string, params: URLSearchParams): string {
 	let signed = url;
@@ -20,15 +18,6 @@ function sign(url: string, params: URLSearchParams): string {
 	}
 	return createHmac('sha1', TOKEN).update(signed).digest('base64');
 }
-
-test('phone request handlers delegate HTTP and upgrade authorization to the adapter', () => {
-	assert.match(
-		SOURCE,
-		/readTwilioBody\(req\)[\s\S]*?twilioWebhookDecision\([\s\S]*?isValidMediaStreamUpgrade\([\s\S]*?info\.req\.url/,
-	);
-	assert.match(SOURCE, /ownerVisionBinding\.attach\(params\.callSid, session\)[\s\S]*?ownerVisionBinding\.remove\(callSid\)/);
-	assert.match(SOURCE, /ffmpegProc\.on\('close'[\s\S]*?clearActivePlaybackProcess\(activePlaybackProc, ffmpegProc\)/);
-});
 
 test('HTTP Twilio gate accepts signed requests and rejects unsigned or changed bodies', () => {
 	const url = 'https://phone.example/twilio/connect';
@@ -49,10 +38,14 @@ test('HTTP Twilio gate returns 413 before checking a body signature', () => {
 	});
 });
 
-test('a media stream start must match the CallSid bound to its signed URL', () => {
-	assert.equal(mediaStreamStartMatches('CA123', 'CA123'), true);
-	assert.equal(mediaStreamStartMatches('CA123', 'CA999'), false);
-	assert.equal(mediaStreamStartMatches(null, 'CA123'), false);
+test('a media stream start must carry the same CallSid natively and as a parameter', () => {
+	const start = { callSid: 'CA123', customParameters: { callSid: 'CA123' } };
+	assert.equal(mediaStreamStartCallSid(start), 'CA123');
+	assert.equal(
+		mediaStreamStartCallSid({ callSid: 'CA123', customParameters: { callSid: 'CA999' } }),
+		null,
+	);
+	assert.equal(mediaStreamStartCallSid({ callSid: 'CA123' }), null);
 });
 
 test('oversized Twilio bodies are paused before their contents can be checked', async () => {

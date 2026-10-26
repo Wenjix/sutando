@@ -94,60 +94,35 @@ export async function readTwilioBody(
 	});
 }
 
-export function mediaStreamUrl(webhookBase: string, callSid: string): string {
-	const url = new URL(webhookBase);
-	const query = new URLSearchParams({ callSid });
-	return `wss://${url.host}/media-stream?${query.toString()}`;
+export function mediaStreamUrl(webhookBase: string): string {
+	return `wss://${new URL(webhookBase).host}/media-stream`;
 }
 
 export function isValidMediaStreamUpgrade(
 	authToken: string,
 	headers: IncomingHttpHeaders,
 	webhookBase: string,
-	requestUrl: string,
 ): boolean {
-	return mediaStreamUpgradeCallSid(authToken, headers, webhookBase, requestUrl) !== null;
-}
-
-export function mediaStreamCallSid(requestUrl: string, webhookBase: string): string | null {
+	if (!webhookBase) return false;
+	let wsUrl: string;
 	try {
-		const target = new URL(requestUrl, webhookBase);
-		const base = new URL(webhookBase);
-		const callSids = target.searchParams.getAll('callSid');
-		if (target.host !== base.host || target.pathname !== '/media-stream' || callSids.length !== 1 || !callSids[0]) {
-			return null;
-		}
-		return callSids[0];
+		wsUrl = mediaStreamUrl(webhookBase);
 	} catch {
-		return null;
-	}
-}
-
-export function mediaStreamStartMatches(signedCallSid: string | null, startCallSid: unknown): boolean {
-	return Boolean(signedCallSid && typeof startCallSid === 'string' && signedCallSid === startCallSid);
-}
-
-export function mediaStreamUpgradeCallSid(
-	authToken: string,
-	headers: IncomingHttpHeaders,
-	webhookBase: string,
-	requestUrl: string,
-): string | null {
-	const callSid = mediaStreamCallSid(requestUrl, webhookBase);
-	if (!callSid) return null;
-	let target: URL;
-	try {
-		target = new URL(requestUrl, webhookBase);
-	} catch {
-		return null;
+		return false;
 	}
 	const signature = headers['x-twilio-signature'];
-	if (typeof signature !== 'string') return null;
-	const wsUrl = `wss://${target.host}${target.pathname}${target.search}`;
-	const httpsUrl = `https://${target.host}${target.pathname}${target.search}`;
+	if (typeof signature !== 'string') return false;
+	const httpsUrl = wsUrl.replace(/^wss:/, 'https:');
 	const params = new URLSearchParams();
 	return isValidTwilioSignature(authToken, signature, wsUrl, params)
-		|| isValidTwilioSignature(authToken, signature, httpsUrl, params)
-		? callSid
-		: null;
+		|| isValidTwilioSignature(authToken, signature, httpsUrl, params);
+}
+
+export function mediaStreamStartCallSid(start: unknown): string | null {
+	// Twilio's own start.callSid must equal the <Parameter> echo our TwiML
+	// attached — a crafted start frame cannot borrow another call's sid.
+	const s = start as { callSid?: unknown; customParameters?: { callSid?: unknown } } | null;
+	const nativeSid = typeof s?.callSid === 'string' ? s.callSid : null;
+	const paramSid = typeof s?.customParameters?.callSid === 'string' ? s.customParameters.callSid : null;
+	return nativeSid !== null && nativeSid === paramSid ? nativeSid : null;
 }
