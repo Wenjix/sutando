@@ -826,8 +826,10 @@ if obs_collector_enabled; then
     _obs_health_rc=$?
     if [ "$_obs_health_rc" -eq 2 ]; then
       echo "  ⚠ obs collector port $OBS_PORT is held by another account's process — metrics/hook capture disabled" >&2
+    elif [ "$_obs_health_rc" -eq 3 ]; then
+      echo "  ⚠ no listener verifiably owned by this account on $OBS_PORT — metrics/hook capture disabled" >&2
     else
-      echo "  ⚠ obs collector unavailable or foreign listener on $OBS_PORT — metrics/hook capture disabled" >&2
+      echo "  ⚠ obs collector unavailable or wrong service on $OBS_PORT — metrics/hook capture disabled" >&2
     fi
   fi
   if [ "$OBS_COLLECTOR_READY" = "1" ]; then

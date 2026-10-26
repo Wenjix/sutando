@@ -49,12 +49,12 @@ if obs_collector_healthy 4000; then rc=0; else rc=$?; fi
 
 LSOF_OUTPUT=''
 if obs_collector_healthy 4000; then rc=0; else rc=$?; fi
-[ "$rc" -ne 0 ] || fail "an unidentified listener should fail closed"
+[ "$rc" -eq 3 ] || fail "an unmeasurable listener should return status 3, not be called foreign"
 
 LSOF_OUTPUT="u$(id -u)
 u99999"
 if obs_collector_healthy 4000; then rc=0; else rc=$?; fi
-[ "$rc" -ne 0 ] || fail "a listener owned by mixed accounts should fail closed"
+[ "$rc" -eq 2 ] || fail "a listener owned by mixed accounts should count as foreign"
 
 LSOF_OUTPUT="u$(id -u)"
 CURL_RESPONSE='{"ok":true,"service":"unrelated-local-service"}'

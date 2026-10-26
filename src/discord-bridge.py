@@ -252,8 +252,12 @@ def _load_plugin_message_hooks():
     for d in os.environ.get("SUTANDO_EXTERNAL_PLUGIN_DIRS", "").split(os.pathsep):
         if d.strip():
             plugin_dir = Path(d.strip())
+            # Entries are checkout roots (hooks live in <root>/skills); a path
+            # already pointing at a skills dir is accepted for back-compat.
+            search.append(plugin_dir / "skills")
             search.append(plugin_dir)
             try:
+                external_dirs.add((plugin_dir / "skills").resolve())
                 external_dirs.add(plugin_dir.resolve())
             except Exception:
                 pass

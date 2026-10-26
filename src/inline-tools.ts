@@ -1364,10 +1364,13 @@ async function loadSkillManifestTools(): Promise<{ owner: ToolDefinition[]; anyC
 		const expanded = expandHome(privateRoot);
 		dirsToScan.push(join(expanded, 'skills'));
 	}
-	// External plugin checkouts are trusted only when explicitly listed.
+	// External plugin checkouts are trusted only when explicitly listed. An entry may
+	// be a checkout root (its skills/ is scanned) or a skills dir directly.
 	const externalPluginDirs = (process.env.SUTANDO_EXTERNAL_PLUGIN_DIRS || '')
 		.split(delimiter).map(d => d.trim()).filter(Boolean);
-	for (const d of externalPluginDirs) dirsToScan.push(join(d, 'skills'));
+	for (const d of externalPluginDirs) {
+		dirsToScan.push(join(d, 'skills'), d);
+	}
 	try {
 		const siblingsRoot = dirname(REPO_ROOT); // dir holding sibling checkouts
 		const ownRoot = resolve(REPO_ROOT);

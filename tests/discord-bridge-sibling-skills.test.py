@@ -82,6 +82,13 @@ with tempfile.TemporaryDirectory(prefix="discord-sibling-skills-") as temp:
         hooks = load_hooks()
         check("explicit sibling plugin imports", marker.exists())
         check("explicit sibling hook is returned", len(hooks) == 1)
+
+        marker.unlink(missing_ok=True)
+        os.environ["SUTANDO_EXTERNAL_PLUGIN_DIRS"] = str(sibling)
+        hooks = load_hooks()
+        # Module-level marker can't re-fire (sys.modules cache); the returned
+        # hook is the proof the root's skills/ dir was scanned.
+        check("checkout-root entry scans its skills dir", len(hooks) == 1)
     finally:
         if previous_dirs is None:
             os.environ.pop("SUTANDO_EXTERNAL_PLUGIN_DIRS", None)
