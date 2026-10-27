@@ -16,7 +16,10 @@ export function mediaStreamVerifyClient(
 	onReject?: (remote: string) => void,
 ): (info: { origin: string; secure: boolean; req: IncomingMessage }) => boolean {
 	return (info) => {
-		const valid = isValidMediaStreamUpgrade(authToken, info.req.headers, webhookBase);
+		// The signature covers only the bare stream URL, so a request target
+		// carrying a query is unsigned data — refuse it outright.
+		const valid = (info.req.url ?? '').indexOf('?') === -1
+			&& isValidMediaStreamUpgrade(authToken, info.req.headers, webhookBase);
 		if (!valid) onReject?.(info.req.socket.remoteAddress ?? '?');
 		return valid;
 	};

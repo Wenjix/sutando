@@ -131,6 +131,7 @@ test('the server wiring refuses unsigned upgrades and accepts a signed one', asy
 		assert.equal(await upgradeStatus(port, '/media-stream'), 401);
 		assert.equal(await upgradeStatus(port, '/media-stream', 'forged'), 401);
 		assert.equal(await upgradeStatus(port, '/media-stream', sign(`${STREAM_URL}?callSid=CA123`)), 401);
+		assert.equal(await upgradeStatus(port, '/media-stream?x=1', sign(STREAM_URL)), 401);
 		assert.equal(await upgradeStatus(port, '/media-stream', sign(STREAM_URL)), 101);
 		assert.equal(await upgradeStatus(port, '/media-stream', sign(STREAM_URL.replace(/^wss:/, 'https:'))), 101);
 	} finally {
