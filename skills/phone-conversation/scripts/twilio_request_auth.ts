@@ -119,8 +119,8 @@ export function isValidMediaStreamUpgrade(
 }
 
 export function mediaStreamStartCallSid(start: unknown): string | null {
-	// Twilio's own start.callSid must equal the <Parameter> echo our TwiML
-	// attached — a crafted start frame cannot borrow another call's sid.
+	// Consistency gate only — both values arrive in the same client frame, so a
+	// crafted one can match itself; the real bind is the signed upgrade + one-shot claim.
 	const s = start as { callSid?: unknown; customParameters?: { callSid?: unknown } } | null;
 	const nativeSid = typeof s?.callSid === 'string' ? s.callSid : null;
 	const paramSid = typeof s?.customParameters?.callSid === 'string' ? s.customParameters.callSid : null;

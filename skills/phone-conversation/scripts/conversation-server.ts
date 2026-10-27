@@ -66,12 +66,11 @@ import { isDirectLoopback, isLoopback } from './loopback_guard.js';
 import { clearActivePlaybackProcess, PlaybackOwner } from './playback_binding.js';
 import { OwnerVisionBinding } from './vision_call_binding.js';
 import {
-	isValidMediaStreamUpgrade,
-	mediaStreamStartCallSid,
 	mediaStreamUrl,
 	readTwilioBody,
 	twilioWebhookDecision,
 } from './twilio_request_auth.js';
+import { mediaStreamClaim, mediaStreamVerifyClient } from './media_stream_binding.js';
 import { VoiceSession, type ToolDefinition, type MainAgent } from 'bodhi-realtime-agent';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -1761,16 +1760,11 @@ const server = createServer(async (req, res) => {
 const wss = new WebSocketServer({
 	server,
 	path: '/media-stream',
-	verifyClient: (info: { origin: string; secure: boolean; req: IncomingMessage }) => {
-		const valid = isValidMediaStreamUpgrade(
-			TWILIO_AUTH_TOKEN, info.req.headers, WEBHOOK_BASE_URL,
-		);
-		if (!valid) {
-			const remote = info.req.socket.remoteAddress ?? '?';
-			console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`);
-		}
-		return valid;
-	},
+	verifyClient: mediaStreamVerifyClient(
+		TWILIO_AUTH_TOKEN,
+		WEBHOOK_BASE_URL,
+		(remote) => console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`),
+	),
 });
 
 wss.on('connection', (ws: WebSocket) => {
@@ -1791,18 +1785,13 @@ wss.on('connection', (ws: WebSocket) => {
 
 				case 'start': {
 					if (callSid) break;
-					const boundCallSid = mediaStreamStartCallSid(msg.start);
-					if (boundCallSid === null) {
-						console.log(`${ts()} [Security] REJECTED media stream callSid mismatch`);
-						ws.close(1008, 'callSid mismatch');
+					const claimed = mediaStreamClaim(callRecords, msg.start);
+					if (!claimed.ok) {
+						console.log(`${ts()} [Security] REJECTED media stream ${claimed.reason === 'callSid mismatch' ? 'callSid mismatch' : `for unknown call ${msg.start.callSid}`}`);
+						ws.close(1008, claimed.reason);
 						break;
 					}
-					const rec = callRecords.claim(boundCallSid);
-					if (!rec) {
-						console.log(`${ts()} [Security] REJECTED media stream for unknown call ${msg.start.callSid}`);
-						ws.close(1008, 'unknown call');
-						break;
-					}
+					const rec = claimed.record;
 					// Reset recording state from previous call (demoState may be stuck at 'done' or 'recording')
 					try { const { resetDemoState } = await import('../../../src/browser-tools.js'); resetDemoState(); } catch {}
 					callSid = rec.callSid;
