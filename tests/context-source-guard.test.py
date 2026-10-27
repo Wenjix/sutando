@@ -16,10 +16,20 @@ import sys
 from pathlib import Path
 
 from _helpers.hermetic_env import isolate_os_environ, isolated_child_env
+from _helpers.subprocess_coverage import covered_code
 
 isolate_os_environ()
 
 HOOK = str(Path(__file__).resolve().parent.parent / "hooks" / "context-source-guard.py")
+
+
+def _hook_argv(hook):
+    # `python -c` + exec, so the coverage runner's child prefix can trace the
+    # hook; the globals keep __file__/__name__ identical to a file invocation.
+    p = str(hook)
+    code = (f"exec(compile(open({p!r}).read(), {p!r}, 'exec'), "
+            f"{{'__file__': {p!r}, '__name__': '__main__'}})")
+    return [sys.executable, "-c", covered_code(code)]
 
 # --- fictitious fixtures (NOT real ids) ---
 PUBLIC_CH = "900000000000000001"       # public channel that blacklists the private guild
@@ -60,7 +70,7 @@ def run(payload, env=ENV):
     #
     # Same shape as the audit-script false green: a subprocess check that reads
     # output but discards returncode cannot tell "ran" from "crashed".
-    proc = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
+    proc = subprocess.run(_hook_argv(HOOK), input=json.dumps(payload),
                           capture_output=True, text=True, timeout=20, env=env)
     assert proc.returncode == 0, (
         f"hook exited {proc.returncode} (expected 0). "
@@ -191,6 +201,31 @@ for command in (
     assert not is_deny(run(reader_read(command))), \
         f"a reader script path used as a non-invocation must remain allowed: {command}"
 
+# 9.5) reader-CLI argument edge cases: every ambiguous or malformed invocation
+# fails CLOSED while a blacklist is active; only unambiguous non-readers pass.
+run(read_task(PUBLIC_CH)[0])
+assert is_deny(run(reader_read(
+    f"src/discord-read.py {PRIVATE_CH} --operator"))), \
+    "a reader script invoked at argv[0] must be denied under a blacklist"
+
+for bad in (
+        f"python3 src/discord-read.py --bogus=1",
+        f"python3 src/read_discord_channel.py --target={PRIVATE_CH}",
+        "python3 src/discord-read.py --serving",
+        "python3 src/discord-read.py -z",
+        f"python3 src/read_discord_channel.py --target {PRIVATE_CH} {OTHER_PUB_CH}",
+        f"python3 src/discord-read.py {PRIVATE_CH} {OTHER_PUB_CH}",
+        "# src/discord-read.py"):
+    run(read_task(PUBLIC_CH)[0])
+    assert is_deny(run(reader_read(bad))), \
+        f"ambiguous reader invocation must fail closed under a blacklist: {bad}"
+
+# prefix-only, bare -c, and script-file arguments carry no scan payload
+for innocuous in ("env FOO=1", "bash -c", "bash run-me.sh"):
+    run(read_task(PUBLIC_CH)[0])
+    assert not is_deny(run(reader_read(innocuous))), \
+        f"a non-reader command must be allowed: {innocuous}"
+
 # 10) shell-wrapped reader invocations must not bypass the guard.
 wrapped_invocations = (
     f"bash -c 'python3 src/discord-read.py {PRIVATE_CH} --operator'",
@@ -223,7 +258,7 @@ import shutil
 lonely_dir = Path(tempfile.mkdtemp())
 lonely_hook = lonely_dir / "context-source-guard.py"
 shutil.copy(HOOK, lonely_hook)
-proc = subprocess.run([sys.executable, str(lonely_hook)],
+proc = subprocess.run(_hook_argv(lonely_hook),
                       input=json.dumps(bash_read(PRIVATE_CH)),
                       capture_output=True, text=True, timeout=20, env=ENV)
 assert proc.returncode == 0, f"hook crashed without its sibling: {proc.stderr[:200]}"
@@ -274,6 +309,77 @@ finally:
 # Since we can't capture it cleanly here (stdout isn't redirected), verify
 # the test completed without an unhandled exception and the SystemExit was raised.
 assert _denied_in_gated_section, "inner gated section: exception must fail-closed (deny), not fail-open"
+
+# 12) in-process paths a file-child cannot attribute (coverage maps children
+#     by filename) or reach (segments() never raises on str): ship-file direct.
+
+# 12a) missing _shell_scan sibling, on the shipped file itself.
+import builtins
+spec_ns = importlib.util.spec_from_file_location("csg_nosib", HOOK)
+nosib = importlib.util.module_from_spec(spec_ns)
+_real_import = builtins.__import__
+def _block_scan(name, *a, **k):
+    if name == "_shell_scan":
+        raise ImportError("blocked for test")
+    return _real_import(name, *a, **k)
+builtins.__import__ = _block_scan
+try:
+    spec_ns.loader.exec_module(nosib)
+finally:
+    builtins.__import__ = _real_import
+assert nosib._shell_scan is None, "the _shell_scan import block did not take"
+sys.stdin = io.StringIO(json.dumps(bash_read(PRIVATE_CH)))
+try:
+    nosib.main()
+    raise AssertionError("missing-sibling hook allowed a channel read")
+except SystemExit as e:
+    assert e.code == 0, f"missing-sibling deny must exit 0, got {e.code}"
+sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash",
+                                  "tool_input": {"command": "ls -la"}}))
+try:
+    nosib.main()
+    raise AssertionError("missing-sibling hook did not exit cleanly on a non-read")
+except SystemExit as e:
+    assert e.code == 0, f"missing-sibling non-read path must exit 0, got {e.code}"
+finally:
+    sys.stdin = _orig_stdin
+
+# 12b) _unwrap_segments edges: depth cap, prefix-only, bare -c, script arg.
+assert csg_mod._unwrap_segments(["deep"], depth=5) == [["deep"]]
+assert csg_mod._unwrap_segments(["env", "FOO=1"]) == [["env", "FOO=1"]]
+assert csg_mod._unwrap_segments(["bash", "-c"]) == [["bash", "-c"]]
+assert csg_mod._unwrap_segments(["bash", "run-me.sh"]) == [["bash", "run-me.sh"]]
+
+# 12c) an inner -c payload whose scan raises propagates None (and one level up).
+W = lambda t: type("W", (), {"text": t})()
+
+class _FakeScan:
+    def __init__(self): self.n = 0
+    def segments(self, cmd):
+        self.n += 1
+        if self.n == 1:        # the outer command
+            return [[W("bash"), W("-c"), W("MID")]]
+        if cmd == "MID":       # the -c payload is another wrapper
+            return [[W("bash"), W("-c"), W("INNER")]]
+        raise RuntimeError("inner parse boom")
+_scan = csg_mod._shell_scan
+_orig_segments = _scan.segments
+_scan.segments = _FakeScan().segments
+try:
+    assert csg_mod._reader_cli_targets("OUTER src/discord-read.py") == (True, [], True), \
+        "an unparseable wrapped payload must fail closed when a reader is named"
+finally:
+    _scan.segments = _orig_segments
+
+# 12d) a top-level scan exception: reader name -> suspicious; non-reader -> allow.
+def _raise_segments(cmd):
+    raise RuntimeError("parse boom")
+_scan.segments = _raise_segments
+try:
+    assert csg_mod._reader_cli_targets("python3 src/discord-read.py 1") == (True, [], True)
+    assert csg_mod._reader_cli_targets("echo hi") == (False, [], False)
+finally:
+    _scan.segments = _orig_segments
 
 print("PASS: context-source-guard — serve public-ch blocks a private-guild read (Read- and cat-paths, "
       "+ fail-closed), allows public channels, serving the private channel reads itself, plain bash untouched, "

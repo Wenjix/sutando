@@ -126,6 +126,29 @@ class TestTelegramDmOnlyReply(unittest.TestCase):
             [("sendMessage", {"chat_id": "-100999",
                               "text": "Sent you the reply in a private chat."})] * 3)
 
+    def test_pending_notices_write_failure_is_swallowed(self):
+        # A state dir that cannot be created must not crash the queue — the
+        # entry stays in memory for a later pass to retry.
+        original_file = bridge._PENDING_NOTICES_FILE
+        blocker = Path(tempfile.mkdtemp()) / "not-a-dir"
+        blocker.write_text("x")
+        bridge._PENDING_NOTICES_FILE = blocker / "pending-notices.json"
+        try:
+            bridge._save_pending_notices({"task-1": "-1"})
+        finally:
+            bridge._PENDING_NOTICES_FILE = original_file
+
+    def test_pending_notices_corrupt_file_loads_empty(self):
+        # A corrupt persisted queue starts empty rather than crashing the loop.
+        original_file = bridge._PENDING_NOTICES_FILE
+        bad = Path(tempfile.mkdtemp()) / "pending-notices.json"
+        bad.write_text("{not json")
+        bridge._PENDING_NOTICES_FILE = bad
+        try:
+            self.assertEqual(bridge._load_pending_notices(), {})
+        finally:
+            bridge._PENDING_NOTICES_FILE = original_file
+
 
 if __name__ == "__main__":
     result = unittest.TextTestRunner(verbosity=2).run(
