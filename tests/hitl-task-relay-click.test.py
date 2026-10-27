@@ -107,15 +107,17 @@ class TaskRelayClickTests(unittest.TestCase):
     def test_event_click_checks_the_attested_tier(self):
         handler = rgb._hitl_reply_handler(OWNER, log=lambda *_: None)
         self.assertIsNotNone(handler)
-        handler.offer({
-            "type": "message.created", "event_id": "$tiered", "actor_id": OWNER,
-            "access_tier": "team",
-            "content": {"space.ag2.hitl.action": {
-                "hitl_id": self.req.id, "expected_revision": self.req.revision,
-                "action_id": "allow", "guard": self.req.guard}},
-        })
-        self.assertEqual(handler.last_outcome, "refused")
-        self.assertIsNone(self.mgr.get(self.req.id).chosen_action)
+        for n, tier in enumerate(("team", "guest")):
+            with self.subTest(tier=tier):
+                handler.offer({
+                    "type": "message.created", "event_id": f"$tiered{n}", "actor_id": OWNER,
+                    "access_tier": tier,
+                    "content": {"space.ag2.hitl.action": {
+                        "hitl_id": self.req.id, "expected_revision": self.req.revision,
+                        "action_id": "allow", "guard": self.req.guard}},
+                })
+                self.assertEqual(handler.last_outcome, "refused")
+                self.assertIsNone(self.mgr.get(self.req.id).chosen_action)
 
     def test_capped_owner_typed_label_stays_a_message(self):
         self.mgr.record_projection(self.req.id, self.req.revision, "$card-capped")
