@@ -148,6 +148,8 @@ class OwnerRouteTests(unittest.TestCase):
         (state / "agent-activity.jsonl").write_text('{"ts":1}\n')
         (state / "agent-activity.archive.2026-08-24.jsonl").write_text('{"ts":1}\n')
         (state / "connect-cards.json").write_text('{"cards":[]}')
+        (state / "local-cards.json").write_text('{"cards":[]}')
+        (state / "quota-history.jsonl").write_text('{"ts":1}\n')
         auth = state / "auth"
         auth.mkdir(exist_ok=True)
         (auth / "cloud-auth.json").write_text("{}")
@@ -155,6 +157,7 @@ class OwnerRouteTests(unittest.TestCase):
             ("/media/state/agent-activity.jsonl", 200),
             ("/media/state/agent-activity.archive.2026-08-24.jsonl", 200),
             ("/media/state/connect-cards.json", 200),
+            ("/media/state/local-cards.json", 200),
             ("/media/state/auth/cloud-auth.json", 404),
             ("/media/state/quota-history.jsonl", 404),
         ):
