@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHmac } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import type { Duplex } from 'node:stream';
 import { CallRecordStore } from '../skills/phone-conversation/scripts/call_records.js';
 import {
 	mediaStreamClaim,
