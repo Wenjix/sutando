@@ -336,5 +336,55 @@ class TaskScopedAttachRoots(unittest.TestCase):
                         "a trailing slash on the root is tolerated")
 
 
+class ConfinedOpen(unittest.TestCase):
+    def setUp(self):
+        base = pathlib.Path(os.path.realpath(tempfile.mkdtemp(prefix="co-")))
+        self.root = base / "root"
+        (self.root / "sub").mkdir(parents=True)
+        (self.root / "sub" / "f.txt").write_text("hi")
+        (base / "secret.txt").write_text("no")
+        os.symlink(base / "secret.txt", self.root / "link.txt")
+        os.symlink(base, self.root / "dirlink")
+        self.base = base
+
+    def test_trusted_root(self):
+        self.assertEqual(guard.trusted_attach_root(self.root), str(self.root))
+        self.assertIsNone(guard.trusted_attach_root(self.root / "missing"))
+        self.assertIsNone(guard.trusted_attach_root(self.root / "sub" / "f.txt"))
+        self.assertIsNone(guard.trusted_attach_root(None))
+        self.assertIsNone(guard.trusted_attach_root(self.root / "dirlink"))
+
+    def test_opens_regular_file_below_root(self):
+        fd = guard.open_confined_attachment(self.root / "sub" / "f.txt", self.root)
+        try:
+            self.assertEqual(os.read(fd, 10), b"hi")
+        finally:
+            os.close(fd)
+
+    def test_refusals(self):
+        for path in (self.root / "link.txt", self.root / "dirlink" / "secret.txt",
+                     self.base / "secret.txt", self.root, self.root / "sub",
+                     self.root / "nope.txt"):
+            with self.subTest(path=str(path)), self.assertRaises((OSError, ValueError)):
+                guard.open_confined_attachment(path, self.root)
+        with self.assertRaises(ValueError):
+            guard.open_confined_attachment(self.root / "sub" / "f.txt", self.base / "none")
+        with self.assertRaises(ValueError):
+            guard.open_confined_attachment("\0", self.root)
+
+    def test_nested_directories_and_malformed_relative_paths(self):
+        deep = self.root / "a" / "b"
+        deep.mkdir(parents=True)
+        (deep / "g.txt").write_text("deep")
+        fd = guard.open_confined_attachment(deep / "g.txt", self.root)
+        os.close(fd)
+        from unittest import mock
+        for effect in (ValueError("bad"), "a//b"):
+            kw = {"side_effect": effect} if isinstance(effect, Exception) else {"return_value": effect}
+            with self.subTest(effect=str(effect)), mock.patch.object(guard.os.path, "relpath", **kw):
+                with self.assertRaises(ValueError):
+                    guard.open_confined_attachment(deep / "g.txt", self.root)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

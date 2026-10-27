@@ -278,6 +278,12 @@ class ReplyHandlerTests(unittest.TestCase):
         self.assertEqual(self.h.offer_task(self._task(reply_to_event="$card", task=text)), "applied")
         self.assertEqual(self.mgr.get(self.req.id).chosen_action, "deny")
 
+    def test_task_event_carries_the_task_access_tier(self):
+        self.assertEqual(self.h.task_to_event(self._task(
+            access_tier="guest", hitl_action=reply_for(self.req, "allow")))["access_tier"], "guest")
+        self.assertNotIn("access_tier", self.h.task_to_event(
+            self._task(hitl_action=reply_for(self.req, "allow"))))
+
     def test_a_quoted_action_without_an_unquoted_answer_stays_a_message(self):
         self.mgr.record_projection(self.req.id, self.req.revision, "$card")
         text = "> <@agent:ag2.space> Allow\n> Deny"

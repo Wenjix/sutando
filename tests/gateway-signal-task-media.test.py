@@ -236,6 +236,18 @@ class TaskMediaRoute(unittest.TestCase):
         self.assertEqual(self._media_posts(), [])
         self.assertIn("provenance", reason)
 
+    def test_confined_read_reports_oversize_and_read_failure(self):
+        mod = self.mod
+        root = mod.RESULTS_DIR / "task-conf-read"
+        root.mkdir(parents=True, exist_ok=True)
+        f = root / "a.bin"
+        f.write_bytes(b"12345")
+        with patch.object(mod, "is_path_sendable", return_value=True):
+            with patch.object(mod, "MAX_MEDIA_BYTES", 2):
+                self.assertIn("exceeds", mod._read_attachment(str(f), confine_root=root)[2])
+            with patch.object(mod.base64, "b64encode", side_effect=OSError("boom")):
+                self.assertIn("read failed", mod._read_attachment(str(f), confine_root=root)[2])
+
     def test_missing_task_file_selects_the_unresolved_confinement_path(self):
         # Past the marker parser, the delivery loop must map a missing task file
         # to _CONFINE_UNRESOLVED: the upload is refused and reported in-band.
