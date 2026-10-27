@@ -47,6 +47,19 @@ class VisionPushAuthTest(unittest.TestCase):
         self.assertEqual(captured["request"].get_header("Authorization"), "Bearer owner-token")
         token.assert_called_once_with(ROOT / "workspace", "")
 
+    def test_post_returns_zero_when_token_resolution_fails(self):
+        def urlopen(_req, timeout):
+            raise AssertionError("urlopen must not run without a token")
+
+        with (
+            mock.patch.object(vision_push, "resolve_workspace", return_value=ROOT / "workspace"),
+            mock.patch.object(vision_push, "local_api_token", side_effect=RuntimeError("no token")),
+            mock.patch("urllib.request.urlopen", side_effect=urlopen),
+        ):
+            status, body = vision_push._post("/vision/start", b"{}", "application/json")
+
+        self.assertEqual((status, body), (0, b""))
+
 
 if __name__ == "__main__":
     unittest.main()
