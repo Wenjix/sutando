@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createHmac } from 'node:crypto';
 import {
@@ -10,6 +11,7 @@ import {
 } from '../skills/phone-conversation/scripts/twilio_request_auth.js';
 
 const TOKEN = 'test-auth-token';
+const SOURCE = readFileSync(new URL('../skills/phone-conversation/scripts/conversation-server.ts', import.meta.url), 'utf8');
 
 function sign(url: string, params: URLSearchParams): string {
 	let signed = url;
@@ -18,6 +20,13 @@ function sign(url: string, params: URLSearchParams): string {
 	}
 	return createHmac('sha1', TOKEN).update(signed).digest('base64');
 }
+
+test('phone request handlers delegate authorization, vision and playback to the adapters', () => {
+	assert.match(SOURCE, /readTwilioBody\(req\)[\s\S]*?twilioWebhookDecision\(/);
+	assert.match(SOURCE, /createMediaStreamServer\(\s*server,[\s\S]*?mediaStreamClaim\(callRecords, msg\.start\)/);
+	assert.match(SOURCE, /ownerVisionBinding\.attach\(params\.callSid, session\)[\s\S]*?ownerVisionBinding\.remove\(callSid\)/);
+	assert.match(SOURCE, /ffmpegProc\.on\('close'[\s\S]*?clearActivePlaybackProcess\(activePlaybackProc, ffmpegProc\)/);
+});
 
 test('HTTP Twilio gate accepts signed requests and rejects unsigned or changed bodies', () => {
 	const url = 'https://phone.example/twilio/connect';
