@@ -521,6 +521,47 @@ def case_o_blacklist_skips_channel_guild_and_null_ref():
     return fails
 
 
+def case_q_blacklist_skip_keeps_allowed_sibling():
+    """Channel-id and guild skips drop their ref while an allowed sibling
+    enriches — the outcome case_o's null ref can never observe."""
+    fails = []
+    _clear_cache()
+    origin = 123456
+    ref_blocked_ch = 789011
+    ref_blocked_guild = 789012
+    ref_allowed = 789014
+    blocked_guild = 345678
+    access_file = Path(tempfile.mkdtemp()) / "access.json"
+    access_file.write_text(json.dumps({
+        "groups": {str(origin): {"contextNotFrom": [str(ref_blocked_ch), str(blocked_guild)]}},
+    }))
+    original_access_file = bridge.ACCESS_FILE
+    bridge.ACCESS_FILE = access_file
+
+    blocked_ch = _MockChannel(ref_blocked_guild)
+    blocked_ch.guild = types.SimpleNamespace(id=blocked_guild)
+    allowed_ch = _MockChannel(ref_allowed, messages=[
+        _MockMessage("1", "u9", "allowed sibling text", _now_dt()),
+    ])
+    allowed_ch.guild = types.SimpleNamespace(id=999999)
+    _install_mock_client({ref_blocked_guild: blocked_ch, ref_allowed: allowed_ch})
+    try:
+        enriched = asyncio.run(bridge._prefetch_discord_state_refs(
+            f"read <#{ref_blocked_ch}> and <#{ref_blocked_guild}> plus <#{ref_allowed}>",
+            origin_channel_id=origin))
+        if enriched is None:
+            fails.append("q) allowed sibling must still enrich when blocked refs skip")
+            return fails
+        if "allowed sibling text" not in enriched:
+            fails.append("q) allowed sibling's messages missing from enriched body")
+        for skipped in (ref_blocked_ch, ref_blocked_guild):
+            if f"Channel <#{skipped}> recent messages" in enriched:
+                fails.append(f"q) blocked ref <#{skipped}> must be skipped, not enriched")
+    finally:
+        bridge.ACCESS_FILE = original_access_file
+    return fails
+
+
 def case_p_post_refusal_when_validator_resolution_fails():
     """A post_gate import/validator failure returns a refusal, never raises."""
     fails = []
@@ -563,6 +604,7 @@ def main():
         ("m-unresolved-blacklisted-ref-does-not-use-cache", case_m_unresolved_blacklisted_ref_does_not_use_cache),
         ("n-guildless-channel-fails-closed-under-blacklist", case_n_guildless_channel_fails_closed_under_blacklist),
         ("o-blacklist-skips-channel-guild-and-null-ref", case_o_blacklist_skips_channel_guild_and_null_ref),
+        ("q-blacklist-skip-keeps-allowed-sibling", case_q_blacklist_skip_keeps_allowed_sibling),
         ("p-post-refusal-when-validator-resolution-fails", case_p_post_refusal_when_validator_resolution_fails),
     ]
     failures = []
