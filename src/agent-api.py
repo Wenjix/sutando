@@ -208,7 +208,7 @@ def _media_file(rel: str) -> Optional[Path]:
     if not safe_rel or safe_rel != rel or ".." in safe_rel or safe_rel.startswith("/") or "\x00" in safe_rel:
         raise ValueError("invalid path")
     components = [part for part in safe_rel.split("/") if part]
-    if not components:
+    if not components:  # pragma: no cover — safe_rel nonempty and not all "/"
         raise ValueError("invalid path")
     safe_parts = [Path(part).name for part in components]
     if any(part.startswith(".") for part in safe_parts) or not _media_rel_allowed(safe_parts):

@@ -119,6 +119,7 @@ class LocalOwnerGate(unittest.TestCase):
     def test_loopback_client_must_use_loopback_host_on_bound_port(self):
         self.assertEqual(self.allowed(host="evil.example:7843"), (403, "host not allowed"))
         self.assertEqual(self.allowed(host="127.0.0.1:9999"), (403, "host not allowed"))
+        self.assertEqual(self.allowed(client_ip="not-an-ip"), (401, "unauthorized"))
 
     def test_loopback_client_must_use_loopback_origin(self):
         self.assertEqual(self.allowed(origin="https://evil.example"),

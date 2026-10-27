@@ -98,6 +98,33 @@ class TwilioSenderTierTests(unittest.TestCase):
                 records = api._twilio_caller_records(time.time())
         self.assertEqual(records["CA-new"]["caller"], "+14155551234")
 
+    def test_caller_record_file_that_is_not_a_dict_reads_empty(self):
+        path = api.WORKSPACE_DIR / "state" / "twilio-callers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('["CA-1"]')
+        with api._TWILIO_CALLERS_LOCK:
+            self.assertEqual(api._twilio_caller_records(time.time()), {})
+        path.write_text('not json')
+        with api._TWILIO_CALLERS_LOCK:
+            self.assertEqual(api._twilio_caller_records(time.time()), {})
+        path.unlink()
+        with api._TWILIO_CALLERS_LOCK:
+            self.assertEqual(api._twilio_caller_records(time.time()), {})
+
+    def test_remember_caller_ignores_values_outside_the_record_contract(self):
+        path = api.WORKSPACE_DIR / "state" / "twilio-callers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+        with api._TWILIO_CALLERS_LOCK:
+            api._remember_twilio_caller("", "+14155550000")
+            api._remember_twilio_caller("CA-1", "unknown")
+            api._remember_twilio_caller("CA-1", "+" + "1" * 65)
+        self.assertEqual(api._twilio_caller_records(time.time()), {})
+
+    def test_caller_lookup_rejects_an_oversized_sid_before_reading(self):
+        self.assertEqual(api._twilio_caller_for_call(""), "")
+        self.assertEqual(api._twilio_caller_for_call("C" * 129), "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

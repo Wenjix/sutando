@@ -228,6 +228,96 @@ class OwnerRouteTests(unittest.TestCase):
         handler.do_GET()
         self.assertEqual(sent, [(401, {"error": "unauthorized"})])
 
+    def test_media_path_policy_itself(self):
+        self.assertTrue(api._media_rel_allowed(["results", "x.png"]))
+        self.assertTrue(api._media_rel_allowed(["state", "agent-activity.jsonl"]))
+        self.assertTrue(api._media_rel_allowed(["state", "agent-activity.archive.2026-08-24.jsonl"]))
+        self.assertFalse(api._media_rel_allowed(["state", "quota-history.jsonl"]))
+        self.assertFalse(api._media_rel_allowed(["state", "auth", "cloud-auth.json"]))
+        self.assertFalse(api._media_rel_allowed(["tasks", "task-1.txt"]))
+
+        results = api.WORKSPACE_DIR / "results"
+        results.mkdir(exist_ok=True)
+        (results / "x.png").write_bytes(b"png")
+        (results / "x.exe").write_bytes(b"exe")
+        for rel, error in (
+            ("results/x.png", None),
+            ("results/x.exe", None),
+            ("results/missing.png", None),
+            ("state/agent-activity.jsonl", None),
+            ("state/quota-history.jsonl", None),
+            ("state/auth/cloud-auth.json", None),
+            ("results/.hidden", None),
+            ("a b/x.png", ValueError),
+            ("results/../x.png", ValueError),
+            ("/abs/x.png", ValueError),
+            ("", ValueError),
+        ):
+            with self.subTest(rel=rel):
+                if error is not None:
+                    with self.assertRaises(error):
+                        api._media_file(rel)
+                else:
+                    got = api._media_file(rel)
+                    if rel == "results/x.png":
+                        self.assertEqual(got, (api.WORKSPACE_DIR / "results" / "x.png").resolve())
+                    else:
+                        self.assertIsNone(got)
+
+        auth = api.WORKSPACE_DIR / "state" / "auth"
+        auth.mkdir(parents=True, exist_ok=True)
+        (auth / "cloud-auth.json").write_text("{}")
+        link = results / "escape.json"
+        try:
+            link.symlink_to(auth / "cloud-auth.json")
+        except OSError:
+            pass
+        else:
+            self.assertIsNone(api._media_file("results/escape.json"))
+
+    def test_logs_voice_root_and_not_found_routes_in_thread(self):
+        logs = api.WORKSPACE_DIR / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / "voice-agent.log").write_text("a\nb\n")
+        sent = []
+        wrote = []
+
+        def drive(path, owner=True):
+            handler = api.Handler.__new__(api.Handler)
+            handler.path = path
+            handler.client_address = ("127.0.0.1", 1)
+            handler.headers = {}
+            handler.check_local_owner_auth = lambda: owner
+            handler.send_owner_json = lambda status, payload: sent.append((status, payload))
+            handler.send_json = lambda status, payload: sent.append((status, payload))
+            handler.send_response = lambda status: sent.append(("response", status))
+            handler.send_header = lambda name, value: None
+            handler.end_headers = lambda: None
+            handler.wfile = type("W", (), {"write": lambda self, data: wrote.append(data)})()
+            handler.do_GET()
+            return handler
+
+        drive("/logs/voice")
+        self.assertIn((200, {"lines": ["a", "b"]}), sent)
+        sent.clear()
+        (logs / "voice-agent.log").unlink()
+        drive("/logs/voice")
+        self.assertIn((404, {"error": "voice-agent.log not found"}), sent)
+        sent.clear()
+        drive("/logs/voice", owner=False)
+        self.assertEqual(sent, [])
+        drive("/")
+        self.assertIn(("response", 200), sent)
+        self.assertIn(api.TASK_FORM.encode(), wrote)
+        sent.clear()
+        drive("/no-such-route")
+        self.assertIn((404, {"error": "not found"}), sent)
+
+        handler = drive("/no-such-route")
+        handler.send_twiml("<Response/>")
+        self.assertIn(b"<Response/>", wrote)
+        self.assertTrue(handler.check_auth())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
