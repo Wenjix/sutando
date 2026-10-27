@@ -5,7 +5,8 @@
  * one-shot claim against the record /twilio/connect stored.
  */
 
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+import { WebSocketServer } from 'ws';
 import type { CallRecord, CallRecordStore } from './call_records.js';
 import { isValidMediaStreamUpgrade, mediaStreamStartCallSid } from './twilio_request_auth.js';
 
@@ -31,4 +32,17 @@ export function mediaStreamClaim(records: CallRecordStore, start: unknown): Medi
 	const record = records.claim(callSid);
 	if (!record) return { ok: false, reason: 'unknown call' };
 	return { ok: true, callSid, record };
+}
+
+export function createMediaStreamServer(
+	server: Server,
+	authToken: string,
+	webhookBase: string,
+	onReject?: (remote: string) => void,
+): WebSocketServer {
+	return new WebSocketServer({
+		server,
+		path: '/media-stream',
+		verifyClient: mediaStreamVerifyClient(authToken, webhookBase, onReject),
+	});
 }

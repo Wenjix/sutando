@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHmac } from 'node:crypto';
-import type { IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
+import { connect, type AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import { CallRecordStore } from '../skills/phone-conversation/scripts/call_records.js';
 import {
+	createMediaStreamServer,
 	mediaStreamClaim,
 	mediaStreamVerifyClient,
 } from '../skills/phone-conversation/scripts/media_stream_binding.js';
@@ -85,4 +88,53 @@ test('the installed start gate refuses a call that never connected', () => {
 		mediaStreamClaim(records, { callSid: 'CA999', customParameters: { callSid: 'CA999' } }),
 		{ ok: false, reason: 'unknown call' },
 	);
+});
+
+async function upgradeStatus(port: number, path: string, signature?: string): Promise<number> {
+	const sock = connect({ port, host: '127.0.0.1' });
+	await once(sock, 'connect');
+	sock.write([
+		`GET ${path} HTTP/1.1`,
+		`Host: 127.0.0.1:${port}`,
+		'Upgrade: websocket',
+		'Connection: Upgrade',
+		'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+		'Sec-WebSocket-Version: 13',
+		...(signature === undefined ? [] : [`X-Twilio-Signature: ${signature}`]),
+		'',
+		'',
+	].join('\r\n'));
+	const chunks: Buffer[] = [];
+	await new Promise<void>((resolve) => {
+		sock.on('data', (chunk) => {
+			chunks.push(chunk);
+			if (Buffer.concat(chunks).includes('\r\n\r\n')) resolve();
+		});
+		sock.on('close', () => resolve());
+		sock.on('error', () => resolve());
+		setTimeout(resolve, 2000);
+	});
+	sock.destroy();
+	const statusLine = Buffer.concat(chunks).toString('utf8').split('\r\n', 1)[0];
+	return Number(statusLine.match(/^HTTP\/1\.1 (\d{3})/)?.[1] ?? -1);
+}
+
+test('the server wiring refuses unsigned upgrades and accepts a signed one', async () => {
+	const httpServer = createServer((_req, res) => {
+		res.writeHead(404);
+		res.end();
+	});
+	const wss = createMediaStreamServer(httpServer, TOKEN, BASE);
+	await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+	const { port } = httpServer.address() as AddressInfo;
+	try {
+		assert.equal(await upgradeStatus(port, '/media-stream'), 401);
+		assert.equal(await upgradeStatus(port, '/media-stream', 'forged'), 401);
+		assert.equal(await upgradeStatus(port, '/media-stream', sign(`${STREAM_URL}?callSid=CA123`)), 401);
+		assert.equal(await upgradeStatus(port, '/media-stream', sign(STREAM_URL)), 101);
+		assert.equal(await upgradeStatus(port, '/media-stream', sign(STREAM_URL.replace(/^wss:/, 'https:'))), 101);
+	} finally {
+		wss.close();
+		httpServer.close();
+	}
 });

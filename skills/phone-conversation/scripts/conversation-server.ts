@@ -70,9 +70,9 @@ import {
 	readTwilioBody,
 	twilioWebhookDecision,
 } from './twilio_request_auth.js';
-import { mediaStreamClaim, mediaStreamVerifyClient } from './media_stream_binding.js';
+import { createMediaStreamServer, mediaStreamClaim } from './media_stream_binding.js';
 import { VoiceSession, type ToolDefinition, type MainAgent } from 'bodhi-realtime-agent';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocket } from 'ws';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import { inlineTools, anyCallerTools, ownerOnlyTools, configurableTools } from '../../../src/inline-tools.js';
@@ -1757,15 +1757,12 @@ const server = createServer(async (req, res) => {
 // [Inbound audio chain entry point] Twilio connects here when a call starts.
 // Each connection: parse stream events → create VoiceSession → bridge audio.
 
-const wss = new WebSocketServer({
+const wss = createMediaStreamServer(
 	server,
-	path: '/media-stream',
-	verifyClient: mediaStreamVerifyClient(
-		TWILIO_AUTH_TOKEN,
-		WEBHOOK_BASE_URL,
-		(remote) => console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`),
-	),
-});
+	TWILIO_AUTH_TOKEN,
+	WEBHOOK_BASE_URL,
+	(remote) => console.log(`${ts()} [Security] REJECTED unsigned media-stream upgrade from ${remote}`),
+);
 
 wss.on('connection', (ws: WebSocket) => {
 	console.log(`${ts()} [WS] Twilio Media Stream connected`);
