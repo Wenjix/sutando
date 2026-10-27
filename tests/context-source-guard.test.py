@@ -209,7 +209,7 @@ assert is_deny(run(reader_read(
     "a reader script invoked at argv[0] must be denied under a blacklist"
 
 for bad in (
-        f"python3 src/discord-read.py --bogus=1",
+        "python3 src/discord-read.py --bogus=1",
         f"python3 src/read_discord_channel.py --target={PRIVATE_CH}",
         "python3 src/discord-read.py --serving",
         "python3 src/discord-read.py -z",
